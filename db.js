@@ -1,11 +1,12 @@
 const { Pool } = require('pg');
+require('dotenv').config();
 
 const pool = new Pool({
-    user: 'postgres',
-    host: 'localhost',
-    database: '32karata',
-    password: '5600119kj;rf',
-    port: 5433,
+    user: process.env.PGUSER,
+    host: process.env.PGHOST,
+    database: process.env.PGDATABASE,
+    password: process.env.PGPASSWORD,
+    port: process.env.PGPORT,
 });
 
 async function saveClientToDB(userId, clientData, phone) {
@@ -21,7 +22,7 @@ async function saveClientToDB(userId, clientData, phone) {
             clinic_person_id = EXCLUDED.clinic_person_id
         RETURNING *;
     `;
-    
+
     const values = [
         userId,
         clientData.display_name || null,
@@ -29,7 +30,7 @@ async function saveClientToDB(userId, clientData, phone) {
         clientData.birthday || null,
         clientData.id_client || null
     ];
-    
+
     try {
         const result = await pool.query(query, values);
         console.log(new Date().toISOString(), 'Клиент сохранен в БД:', userId);

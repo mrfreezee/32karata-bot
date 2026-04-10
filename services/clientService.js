@@ -38,7 +38,7 @@ async function saveClientToDB(userId, clientData, phone) {
         INSERT INTO public.client (
             user_id, full_name, phone, birth_date, reg_date, role, 
             client_code, ref_code, is_new, bonus_balance, clinic_person_id, data_processing, branch_id, location
-        ) VALUES ($1, $2, $3, $4, NOW(), 'patient', $5, $6, true, 200, $7, true, $8, 'tlt')
+        ) VALUES ($1, $2, $3, $4, NOW(), 'patient', $5, $6, true, 200, $7, true, $8, $9)
         RETURNING *;
     `;
 
@@ -50,7 +50,8 @@ async function saveClientToDB(userId, clientData, phone) {
         clientCode,          // $5
         refCode,             // $6
         clinicPersonId,      // $7
-        null                 // $8 - branch_id
+        null,               // $8 - branch_id
+        process.env.LOCATION
     ];
 
     try {

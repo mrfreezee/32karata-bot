@@ -4,10 +4,10 @@ require('dotenv').config();
 module.exports = {
     BOT_TOKEN: process.env.BOT_TOKEN,
     DB: {
-        user: 'postgres',
-        host: 'localhost',
-        database: '32karata',
-        password: '5600119kj;rf',
-        port: 5433,
+        user: process.env.PGUSER,
+        host: process.env.PGHOST,
+        database: process.env.PGDATABASE,
+        password:process.env.PGPASSWORD,
+        port: process.env.PGPORT,
     }
 };
