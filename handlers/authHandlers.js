@@ -1,20 +1,23 @@
 // handlers/authHandlers.js
 const { getClientByPhone, checkClientExists, saveClientToDB } = require('../services/clientService');
 const { requestContactKeyboard, confirmKeyboard, agreeKeyboard } = require('../keyboards/keyboards');
+const logger = require('../services/loggerService');
 const { cleanPhoneNumber } = require('../utils/phoneHelper'); // ДОБАВИТЬ ИМПОРТ
 
 const userStates = new Map();
 
 function handleStart(bot) {
     bot.command('start', async (ctx) => {
-           const startParam = ctx.message?.body?.start_param;
+        const startParam = ctx.message?.body?.start_param;
         console.log('🔍 start_param:', startParam);
-        
+
         const userId = ctx.message?.sender?.user_id;
         const userName = ctx.message?.sender?.first_name || 'Гость';
 
+        logger.botStart(userId, userName, startParam);
+
         console.log(new Date().toISOString(), 'Пользователь запустил бота:', userId, userName);
-        
+
         let finalUserId = userId;
         if (startParam) {
             finalUserId = startParam;
@@ -24,8 +27,7 @@ function handleStart(bot) {
 
         if (isAuthorized) {
             await ctx.reply(
-                `👋 С возвращением, ${userName}!\n\nВы уже авторизованы в боте.\n\n` +
-                `Доступные команды:\n/check - проверить записи\n/help - помощь`
+                `👋 С возвращением, ${userName}!\n\nВы уже авторизованы в боте.`
             );
             return;
         }
@@ -44,6 +46,7 @@ function handleStart(bot) {
 function handleAgreeProcessing(bot) {
     bot.action('agree_processing', async (ctx) => {
         const userId = ctx.callback?.user?.user_id;
+        logger.consentGiven(userId);
         console.log('✅ Согласие получено от пользователя:', userId);
         userStates.set(userId, { step: 'awaiting_phone' });
         console.log('📝 Состояние сохранено:', userStates.get(userId));
@@ -60,11 +63,11 @@ function handleContact(bot) {
         const message = ctx.message;
         const userId = message?.sender?.user_id; // userId отправителя
         const state = userStates.get(userId);
-        
+
         console.log('🔍 userId:', userId);
         console.log('🔍 state:', state);
         console.log('🔍 Все состояния:', Array.from(userStates.entries()));
-        
+
         // Проверяем состояние
         if (!state || state.step !== 'awaiting_phone') {
             console.log('⏭️ Пропускаем: нет состояния или не тот шаг');
@@ -74,20 +77,20 @@ function handleContact(bot) {
         // Ищем контакт в attachments
         const attachments = message?.body?.attachments || [];
         const contactAttachment = attachments.find(a => a.type === 'contact');
-        
+
         if (!contactAttachment) {
             console.log('❌ Контакт не найден в attachments');
             return;
         }
-        
+
         const contact = contactAttachment.payload;
         const phone = contact?.vcf_info?.match(/TEL[^:]*:([^\r\n]+)/)?.[1];
-        
+
         console.log('📞 Найден номер телефона:', phone);
-        
+
         if (phone) {
             await ctx.reply('🔍 Проверяем данные пациента...');
-            
+
             const result = await getClientByPhone(phone);
             console.log('📦 Результат API:', JSON.stringify(result, null, 2));
 
@@ -130,11 +133,16 @@ function handleConfirmData(bot) {
             return;
         }
 
-        await saveClientToDB(userId, state.clientData, state.phone);
+        const result = await saveClientToDB(userId, state.clientData, state.phone);
+
+        if (result) {
+            logger.authSuccess(userId, state.phone, state.clientData);
+        }
+
         userStates.delete(userId);
 
         await ctx.reply(
-            `✅ Добро пожаловать!\n\nВы успешно авторизованы.\n\nИспользуйте /check для проверки записей.`
+            `✅ Добро пожаловать!\n\nВы успешно авторизованы.`
         );
     });
 }
@@ -142,6 +150,7 @@ function handleConfirmData(bot) {
 function handleCancelAuth(bot) {
     bot.action('cancel_auth', async (ctx) => {
         const userId = ctx.callback?.user?.user_id;
+         logger.authCancel(userId)
         userStates.delete(userId);
         await ctx.reply(`❌ Авторизация отменена\n\nНажмите /start для повторной попытки.`);
     });

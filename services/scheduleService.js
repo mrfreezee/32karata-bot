@@ -2,8 +2,12 @@ const config = require('../config');
 const { pool } = require('../db');
 const { normalizePatientName } = require('../utils/nameNormalizer');
 
+const API_TOKEN = process.env.API_TOKEN
+const API_SECRET = process.env.API_SECRET
+const API_CLIENT_URL = process.env.API_CLIENT_URL
+
 async function getSchedule(dateStart, dateEnd) {
-    const url = `${config.API.SCHEDULE_URL}?token=${config.API.TOKEN}&secret=${config.API.SECRET}&date_start=${dateStart}&date_end=${dateEnd}`;
+    const url = `${API_CLIENT_URL}/api/mobile/schedule?token=${API_TOKEN}&secret=${API_SECRET}&date_start=${dateStart}&date_end=${dateEnd}`;
 
     try {
         const response = await fetch(url);

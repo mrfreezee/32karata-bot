@@ -1,14 +1,15 @@
+require('dotenv').config();
 const { pool } = require('../db');
 const { cleanPhoneNumber } = require('../utils/phoneHelper');
 const { generateUniqueCode } = require('../utils/codeGenerator');
 
-const API_TOKEN = 'ff66ef3e-0ffb-49b5-a7c7-2b7659ae2a1e';
-const API_SECRET = '9e27bda7406bf9f79154dbd8fc5d3a8c';
-const API_CLIENT_URL = 'https://32karatatlt.dental-pro.online/api/client_by_phone';
+const API_TOKEN = process.env.API_TOKEN
+const API_SECRET = process.env.API_SECRET
+const API_CLIENT_URL = process.env.API_CLIENT_URL
 
 async function getClientByPhone(phone) {
     const cleanPhone = cleanPhoneNumber(phone);
-    const url = `${API_CLIENT_URL}?token=${API_TOKEN}&secret=${API_SECRET}&phone=${cleanPhone}`;
+    const url = `${API_CLIENT_URL}/api/client_by_phone?token=${API_TOKEN}&secret=${API_SECRET}&phone=${cleanPhone}`;
 
     try {
         const response = await fetch(url);
@@ -30,33 +31,28 @@ async function getClientByPhone(phone) {
 async function saveClientToDB(userId, clientData, phone) {
     const clientCode = await generateUniqueCode();
     const refCode = await generateUniqueCode();
-    
+
     const clinicPersonId = clientData.id_client ? Number(clientData.id_client) : null;
-    
+
     const query = `
         INSERT INTO public.client (
             user_id, full_name, phone, birth_date, reg_date, role, 
-            client_code, ref_code, is_new, bonus_balance, clinic_person_id, data_processing
-        ) VALUES ($1, $2, $3, $4, NOW(), 'patient', $5, $6, true, 200, $7, true)
-        ON CONFLICT (user_id) DO UPDATE SET
-            full_name = EXCLUDED.full_name,
-            phone = EXCLUDED.phone,
-            birth_date = EXCLUDED.birth_date,
-            clinic_person_id = EXCLUDED.clinic_person_id,
-            data_processing = true
+            client_code, ref_code, is_new, bonus_balance, clinic_person_id, data_processing, branch_id, location
+        ) VALUES ($1, $2, $3, $4, NOW(), 'patient', $5, $6, true, 200, $7, true, $8, 'tlt')
         RETURNING *;
     `;
-    
+
     const values = [
-        Number(userId),
-        clientData.display_name || null,
-        phone,
-        clientData.birthday || null,
-        clientCode,
-        refCode,
-        clinicPersonId
+        Number(userId),      // $1
+        clientData.display_name || null,  // $2
+        phone,               // $3
+        clientData.birthday || null,  // $4
+        clientCode,          // $5
+        refCode,             // $6
+        clinicPersonId,      // $7
+        null                 // $8 - branch_id
     ];
-    
+
     try {
         const result = await pool.query(query, values);
         console.log(`✅ Клиент сохранен в БД: ${userId} - ${clientData.display_name}`);
