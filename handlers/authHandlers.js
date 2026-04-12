@@ -1,26 +1,48 @@
 // handlers/authHandlers.js
 const { getClientByPhone, checkClientExists, saveClientToDB } = require('../services/clientService');
 const { requestContactKeyboard, confirmKeyboard, agreeKeyboard } = require('../keyboards/keyboards');
-const logger = require('../services/loggerService');
-const { cleanPhoneNumber } = require('../utils/phoneHelper'); // ДОБАВИТЬ ИМПОРТ
+const { cleanPhoneNumber } = require('../utils/phoneHelper');
+const { pgPool } = require('../db');
 
 const userStates = new Map();
 
 function handleStart(bot) {
     bot.command('start', async (ctx) => {
-        const startParam = ctx.message?.body?.start_param;
-        console.log('🔍 start_param:', startParam);
+        const fullText = ctx.message?.body?.text || '';
+        
+        // Извлекаем параметр из текста "/start КОД"
+        let startParam = ctx.message?.body?.start_param;
+        
+        if (!startParam && fullText.startsWith('/start ')) {
+            startParam = fullText.substring(7).trim();
+        }
+        
+        console.log('🔍 fullText:', fullText);
+        console.log('🔍 startParam:', startParam);
 
+        
         const userId = ctx.message?.sender?.user_id;
         const userName = ctx.message?.sender?.first_name || 'Гость';
-
-        logger.botStart(userId, userName, startParam);
 
         console.log(new Date().toISOString(), 'Пользователь запустил бота:', userId, userName);
 
         let finalUserId = userId;
-        if (startParam) {
-            finalUserId = startParam;
+        let referrerId = null;
+        
+        // Проверяем, является ли start_param реферальным кодом
+        if (startParam && startParam.length >= 6) {
+            // Ищем пользователя с таким ref_code
+            const referrerQuery = await pgPool.query(
+                `SELECT user_id, full_name FROM client WHERE ref_code = $1 LIMIT 1`,
+                [startParam]
+            );
+            
+            if (referrerQuery.rows.length > 0) {
+                referrerId = referrerQuery.rows[0].user_id;
+                console.log(`🎉 Найден пригласивший: ${referrerQuery.rows[0].full_name} (${referrerId})`);
+            } else {
+                console.log(`⚠️ Реферальный код ${startParam} не найден, игнорируем`);
+            }
         }
 
         const isAuthorized = await checkClientExists(finalUserId);
@@ -33,6 +55,9 @@ function handleStart(bot) {
         }
 
         userStates.delete(userId);
+        
+        // Сохраняем referrerId в состояние пользователя
+        userStates.set(userId, { referrerId });
 
         await ctx.reply(
             `📄 В соответствии с Федеральным законом №152-ФЗ "О персональных данных",\n\n` +
@@ -46,9 +71,13 @@ function handleStart(bot) {
 function handleAgreeProcessing(bot) {
     bot.action('agree_processing', async (ctx) => {
         const userId = ctx.callback?.user?.user_id;
-        logger.consentGiven(userId);
+        const state = userStates.get(userId) || {};
+        
         console.log('✅ Согласие получено от пользователя:', userId);
-        userStates.set(userId, { step: 'awaiting_phone' });
+        userStates.set(userId, { 
+            step: 'awaiting_phone',
+            referrerId: state.referrerId 
+        });
         console.log('📝 Состояние сохранено:', userStates.get(userId));
 
         await ctx.reply(
@@ -61,20 +90,17 @@ function handleAgreeProcessing(bot) {
 function handleContact(bot) {
     bot.on('message_created', async (ctx) => {
         const message = ctx.message;
-        const userId = message?.sender?.user_id; // userId отправителя
+        const userId = message?.sender?.user_id;
         const state = userStates.get(userId);
 
         console.log('🔍 userId:', userId);
         console.log('🔍 state:', state);
-        console.log('🔍 Все состояния:', Array.from(userStates.entries()));
 
-        // Проверяем состояние
         if (!state || state.step !== 'awaiting_phone') {
             console.log('⏭️ Пропускаем: нет состояния или не тот шаг');
             return;
         }
 
-        // Ищем контакт в attachments
         const attachments = message?.body?.attachments || [];
         const contactAttachment = attachments.find(a => a.type === 'contact');
 
@@ -109,7 +135,8 @@ function handleContact(bot) {
                 userStates.set(userId, {
                     step: 'awaiting_confirm',
                     clientData: client,
-                    phone: phone
+                    phone: phone,
+                    referrerId: state.referrerId
                 });
 
                 await ctx.reply(messageText, { attachments: [confirmKeyboard] });
@@ -133,10 +160,11 @@ function handleConfirmData(bot) {
             return;
         }
 
-        const result = await saveClientToDB(userId, state.clientData, state.phone);
+        // Сохраняем пользователя с invited_id (кто пригласил)
+        const result = await saveClientToDB(userId, state.clientData, state.phone, state.referrerId);
 
         if (result) {
-            logger.authSuccess(userId, state.phone, state.clientData);
+            console.log(`✅ Клиент сохранен: ${userId}, пригласил: ${state.referrerId || 'никто'}`);
         }
 
         userStates.delete(userId);
@@ -150,7 +178,6 @@ function handleConfirmData(bot) {
 function handleCancelAuth(bot) {
     bot.action('cancel_auth', async (ctx) => {
         const userId = ctx.callback?.user?.user_id;
-         logger.authCancel(userId)
         userStates.delete(userId);
         await ctx.reply(`❌ Авторизация отменена\n\nНажмите /start для повторной попытки.`);
     });

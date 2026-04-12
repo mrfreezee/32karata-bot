@@ -52,6 +52,7 @@ let reminderInterval = null;
 
 // Автоматическая проверка каждый день в 9:00
 const dayjs = require('dayjs');
+const logger = require('./services/loggerService');
 const scheduleDailyCheck = () => {
     // Очищаем существующий интервал, если он есть
     if (reminderInterval) {

@@ -28,7 +28,7 @@ async function getClientByPhone(phone) {
     }
 }
 
-async function saveClientToDB(userId, clientData, phone) {
+async function saveClientToDB(userId, clientData, phone, invitedId = null) {
     const clientCode = await generateUniqueCode();
     const refCode = await generateUniqueCode();
 
@@ -37,32 +37,35 @@ async function saveClientToDB(userId, clientData, phone) {
     const query = `
         INSERT INTO public.client (
             user_id, full_name, phone, birth_date, reg_date, role, 
-            client_code, ref_code, is_new, bonus_balance, clinic_person_id, data_processing, branch_id, location
-        ) VALUES ($1, $2, $3, $4, NOW(), 'patient', $5, $6, true, 200, $7, true, $8, $9)
+            client_code, ref_code, is_new, bonus_balance, clinic_person_id, 
+            data_processing, branch_id, location, invited_id, invitation_date
+        ) VALUES ($1, $2, $3, $4, NOW(), 'patient', $5, $6, true, 200, $7, true, $8, $9, $10, NOW())
         RETURNING *;
     `;
 
     const values = [
-        Number(userId),      // $1
-        clientData.display_name || null,  // $2
-        phone,               // $3
-        clientData.birthday || null,  // $4
-        clientCode,          // $5
-        refCode,             // $6
-        clinicPersonId,      // $7
-        null,               // $8 - branch_id
-        process.env.LOCATION
+        Number(userId),
+        clientData.display_name || null,
+        phone,
+        clientData.birthday || null,
+        clientCode,
+        refCode,
+        clinicPersonId,
+        null,  // branch_id
+        process.env.LOCATION,
+        invitedId ? Number(invitedId) : null  // invited_id - кто пригласил
     ];
 
     try {
         const result = await pool.query(query, values);
-        console.log(`✅ Клиент сохранен в БД: ${userId} - ${clientData.display_name}`);
+        console.log(`✅ Клиент сохранен в БД: ${userId} - ${clientData.display_name}, пригласил: ${invitedId || 'никто'}`);
         return result.rows[0];
     } catch (error) {
         console.error('Ошибка сохранения клиента:', error);
         return null;
     }
 }
+
 
 async function checkClientExists(userId) {
     const result = await pool.query(
