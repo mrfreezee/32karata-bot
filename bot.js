@@ -13,52 +13,97 @@ const { handleReminderConfirm } = require('./handlers/reminderHandlers');
 const { checkAndSendReminders } = require('./handlers/reminderHandlers');
 const https = require('https');
 
-// Флаг для предотвращения повторной инициализации
 let isInitialized = false;
+let bot = null;
+let reconnectAttempts = 0;
+let isReconnecting = false;
+let reminderInterval = null;
 
-// Создаем агент с правильными настройками для избежания ECONNRESET
+const MAX_RECONNECT_ATTEMPTS = 10;
+const BASE_DELAY = 5000;
+
+// Создаем агент с правильными настройками
 const agent = new https.Agent({
     keepAlive: true,
-    keepAliveMsecs: 10000,
-    timeout: 60000,
+    keepAliveMsecs: 30000,
+    timeout: 120000,
     rejectUnauthorized: false
 });
 
-const bot = new Bot(config.BOT_TOKEN, {
-    api: {
-        agent: agent,
-        timeout: 60000,
-        apiTimeout: 60000,
-        apiTimeoutWebhook: 60000
-    }
-});
-
-// Регистрация обработчиков только один раз
-if (!isInitialized) {
-    handleStart(bot);
-    handleAgreeProcessing(bot);
-    handleContact(bot);
-    handleConfirmData(bot);
-    handleCancelAuth(bot);
-    handleHelp(bot);
-    handleCheck(bot);
-    handleReminderConfirm(bot);
-    isInitialized = true;
-    console.log('✅ Обработчики зарегистрированы');
+function createBot() {
+    return new Bot(config.BOT_TOKEN, {
+        api: {
+            agent: agent,
+            timeout: 120000,
+            apiTimeout: 120000,
+            apiTimeoutWebhook: 120000
+        }
+    });
 }
 
-// Глобальная переменная для отслеживания активного интервала
-let reminderInterval = null;
+function setupHandlers(botInstance) {
+    if (!isInitialized) {
+        handleStart(botInstance);
+        handleAgreeProcessing(botInstance);
+        handleContact(botInstance);
+        handleConfirmData(botInstance);
+        handleCancelAuth(botInstance);
+        handleHelp(botInstance);
+        handleCheck(botInstance);
+        handleReminderConfirm(botInstance);
+        isInitialized = true;
+        console.log('✅ Обработчики зарегистрированы');
+    }
+}
+
+async function startBotWithReconnect() {
+    if (isReconnecting) {
+        console.log('⏳ Already reconnecting, skipping...');
+        return;
+    }
+    
+    isReconnecting = true;
+    
+    try {
+        if (bot) {
+            try {
+                await bot.stop();
+            } catch(e) {}
+        }
+        
+        bot = createBot();
+        setupHandlers(bot);
+        
+        await bot.start();
+        console.log('🤖 Бот успешно запущен!');
+        reconnectAttempts = 0;
+        isReconnecting = false;
+        
+    } catch (err) {
+        console.error(`❌ Ошибка запуска (попытка ${reconnectAttempts + 1}):`, err.message);
+        reconnectAttempts++;
+        isReconnecting = false;
+        
+        if (reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
+            const delay = BASE_DELAY * Math.min(Math.pow(2, reconnectAttempts - 1), 300);
+            console.log(`⏳ Повтор через ${delay / 1000} секунд...`);
+            setTimeout(() => startBotWithReconnect(), delay);
+        } else {
+            console.error('❌ Превышено количество попыток переподключения');
+            reconnectAttempts = 0;
+            setTimeout(() => startBotWithReconnect(), 60000);
+        }
+    }
+}
 
 // Автоматическая проверка каждый день в 9:00
 const dayjs = require('dayjs');
 const logger = require('./services/loggerService');
+
 const scheduleDailyCheck = () => {
-    // Очищаем существующий интервал, если он есть
     if (reminderInterval) {
         clearInterval(reminderInterval);
         reminderInterval = null;
-        console.log('🔄 Очищен старый интервал напоминаний');
     }
 
     const now = dayjs();
@@ -70,82 +115,60 @@ const scheduleDailyCheck = () => {
     }
 
     setTimeout(() => {
-        console.log('⏰ Запуск ежедневной проверки...');
-        checkAndSendReminders(bot).catch(console.error);
-        reminderInterval = setInterval(() => {
-            console.log('⏰ Запуск ежедневной проверки...');
+        if (bot) {
             checkAndSendReminders(bot).catch(console.error);
+        }
+        reminderInterval = setInterval(() => {
+            if (bot) {
+                checkAndSendReminders(bot).catch(console.error);
+            }
         }, 24 * 60 * 60 * 1000);
     }, delay);
 };
 
 scheduleDailyCheck();
 
-// Функция запуска бота с повторными попытками
-const startBotWithRetry = async (retries = 5, delay = 5000) => {
-    for (let i = 0; i < retries; i++) {
+// Периодическая проверка здоровья бота (каждые 5 минут)
+setInterval(async () => {
+    if (bot && bot.botInfo) {
         try {
-            await bot.start();
-            logger.info('Бот успешно запущен', { retries: i + 1 });
-            console.log('🤖 Бот успешно запущен!');
-            return;
+            await bot.telegram.getMe();
+            console.log('✅ Bot health check OK');
         } catch (err) {
-            logger.error(err, { function: 'startBotWithRetry', attempt: i + 1 });
-            console.error(`❌ Ошибка запуска (попытка ${i + 1}/${retries}):`, err.message);
-            if (i < retries - 1) {
-                console.log(`⏳ Повтор через ${delay / 1000} секунд...`);
-                await new Promise(resolve => setTimeout(resolve, delay));
-            } else {
-                console.error('❌ Не удалось запустить бота после всех попыток');
-                process.exit(1);
-            }
+            console.error('❌ Bot health check failed:', err.message);
+            startBotWithReconnect();
         }
-    }
-};
-
-// Глобальная обработка ошибок сети
-process.on('uncaughtException', (err) => {
-     logger.error(err, { type: 'uncaughtException' });
-    if (err.code === 'ECONNRESET' || err.message?.includes('ECONNRESET') || err.message?.includes('fetch failed')) {
-        console.log('🔄 Переподключение из-за сетевой ошибки...');
-        setTimeout(() => {
-            startBotWithRetry(3, 3000);
-        }, 3000);
     } else {
-        console.error('Uncaught Exception:', err);
+        startBotWithReconnect();
     }
+}, 5 * 60 * 1000);
+
+// Обработка ошибок
+process.on('uncaughtException', (err) => {
+    logger.error(err, { type: 'uncaughtException' });
+    console.error('Uncaught Exception:', err.message);
+    startBotWithReconnect();
 });
 
 process.on('unhandledRejection', (reason) => {
     logger.error(reason, { type: 'unhandledRejection' });
-    if (reason?.code === 'ECONNRESET' || reason?.message?.includes('ECONNRESET') || reason?.message?.includes('fetch failed')) {
-        console.log('🔄 Переподключение из-за сетевой ошибки (rejection)...');
-        setTimeout(() => {
-            startBotWithRetry(3, 3000);
-        }, 3000);
-    } else {
-        console.error('Unhandled Rejection:', reason);
-    }
+    console.error('Unhandled Rejection:', reason);
+    startBotWithReconnect();
 });
 
-// Обработка graceful shutdown
 process.on('SIGINT', () => {
     console.log('🛑 Остановка бота...');
-    if (reminderInterval) {
-        clearInterval(reminderInterval);
-    }
-    bot.stop();
+    if (reminderInterval) clearInterval(reminderInterval);
+    if (bot) bot.stop();
     process.exit(0);
 });
 
 process.on('SIGTERM', () => {
     console.log('🛑 Остановка бота...');
-    if (reminderInterval) {
-        clearInterval(reminderInterval);
-    }
-    bot.stop();
+    if (reminderInterval) clearInterval(reminderInterval);
+    if (bot) bot.stop();
     process.exit(0);
 });
 
-// Запуск бота
-startBotWithRetry();
+// Запуск
+startBotWithReconnect();
