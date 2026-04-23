@@ -6,32 +6,20 @@ const { pgPool } = require('../db');
 
 const userStates = new Map();
 
-function handleStart(bot) {
-    bot.command('start', async (ctx) => {
-        const fullText = ctx.message?.body?.text || '';
-        
-        // Извлекаем параметр из текста "/start КОД"
-        let startParam = ctx.message?.body?.start_param;
-        
-        if (!startParam && fullText.startsWith('/start ')) {
-            startParam = fullText.substring(7).trim();
-        }
-        
-        console.log('🔍 fullText:', fullText);
-        console.log('🔍 startParam:', startParam);
+// Основная функция авторизации
+async function authorizeUser(ctx, userId, userName, startParam) {
+    console.log(new Date().toISOString(), 'Авторизация пользователя:', userId, userName);
 
-        
-        const userId = ctx.message?.sender?.user_id;
-        const userName = ctx.message?.sender?.first_name || 'Гость';
+    if (!userId) {
+        console.error('❌ Не удалось получить userId');
+        await ctx.reply('Ошибка авторизации. Пожалуйста, попробуйте позже.');
+        return false;
+    }
 
-        console.log(new Date().toISOString(), 'Пользователь запустил бота:', userId, userName);
-
-        let finalUserId = userId;
-        let referrerId = null;
-        
-        // Проверяем, является ли start_param реферальным кодом
-        if (startParam && startParam.length >= 6) {
-            // Ищем пользователя с таким ref_code
+    let referrerId = null;
+    
+    if (startParam && startParam.length >= 6) {
+        try {
             const referrerQuery = await pgPool.query(
                 `SELECT user_id, full_name FROM client WHERE ref_code = $1 LIMIT 1`,
                 [startParam]
@@ -40,31 +28,64 @@ function handleStart(bot) {
             if (referrerQuery.rows.length > 0) {
                 referrerId = referrerQuery.rows[0].user_id;
                 console.log(`🎉 Найден пригласивший: ${referrerQuery.rows[0].full_name} (${referrerId})`);
-            } else {
-                console.log(`⚠️ Реферальный код ${startParam} не найден, игнорируем`);
             }
+        } catch (err) {
+            console.error('Ошибка поиска реферала:', err.message);
         }
+    }
 
-        const isAuthorized = await checkClientExists(finalUserId);
+    const isAuthorized = await checkClientExists(userId);
 
-        if (isAuthorized) {
-            await ctx.reply(
-                `👋 С возвращением, ${userName}!\n\nВы уже авторизованы в боте.`
-            );
-            return;
-        }
+    if (isAuthorized) {
+        await ctx.reply(`👋 С возвращением, ${userName}!`);
+        return true;
+    }
 
-        userStates.delete(userId);
+    userStates.delete(userId);
+    userStates.set(userId, { referrerId });
+
+    await ctx.reply(
+        `📄 В соответствии с Федеральным законом №152-ФЗ "О персональных данных",\n\n` +
+        `вы должны дать согласие на обработку ваших данных для продолжения работы.\n\n` +
+        `Нажимая "Согласен", вы подтверждаете, что ознакомлены и согласны с условиями.`,
+        { attachments: [agreeKeyboard] }
+    );
+    
+    return false;
+}
+
+// Получение userId из разных типов событий
+function getUserIdFromContext(ctx) {
+    return ctx.user_id || 
+           ctx.user?.user_id || 
+           ctx.message?.sender?.user_id || 
+           ctx.callback?.user?.user_id;
+}
+
+function handleStart(bot) {
+    // Обработчик запуска через интерфейс MAX
+    bot.on('bot_started', async (ctx) => {
+        const userId = getUserIdFromContext(ctx);
+        const userName = ctx.user?.first_name || ctx.message?.sender?.first_name || 'Гость';
+        const startParam = ctx.start_param || ctx.message?.body?.start_param;
         
-        // Сохраняем referrerId в состояние пользователя
-        userStates.set(userId, { referrerId });
+        await authorizeUser(ctx, userId, userName, startParam);
+    });
 
-        await ctx.reply(
-            `📄 В соответствии с Федеральным законом №152-ФЗ "О персональных данных",\n\n` +
-            `вы должны дать согласие на обработку ваших данных для продолжения работы.\n\n` +
-            `Нажимая "Согласен", вы подтверждаете, что ознакомлены и согласны с условиями.`,
-            { attachments: [agreeKeyboard] }
-        );
+    // Обработчик команды /start
+    bot.command('start', async (ctx) => {
+        const userId = getUserIdFromContext(ctx);
+        const userName = ctx.message?.sender?.first_name || 'Гость';
+        
+        // Извлекаем start_param из текста "/start КОД"
+        let startParam = ctx.message?.body?.start_param;
+        const fullText = ctx.message?.body?.text || '';
+        
+        if (!startParam && fullText.startsWith('/start ')) {
+            startParam = fullText.substring(7).trim();
+        }
+        
+        await authorizeUser(ctx, userId, userName, startParam);
     });
 }
 
@@ -160,7 +181,6 @@ function handleConfirmData(bot) {
             return;
         }
 
-        // Сохраняем пользователя с invited_id (кто пригласил)
         const result = await saveClientToDB(userId, state.clientData, state.phone, state.referrerId);
 
         if (result) {
