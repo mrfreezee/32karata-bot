@@ -6,9 +6,22 @@ const { pgPool } = require('../db');
 
 const userStates = new Map();
 
+// Получение userId из разных типов событий
+function getUserIdFromContext(ctx) {
+    return ctx.user_id || 
+           ctx.user?.user_id || 
+           ctx.message?.sender?.user_id || 
+           ctx.callback?.user?.user_id;
+}
+
+// Получение avatarUrl из контекста
+function getAvatarUrlFromContext(ctx) {
+    return ctx.user?.avatar_url || ctx.user?.full_avatar_url || null;
+}
+
 // Основная функция авторизации
-async function authorizeUser(ctx, userId, userName, startParam) {
-    console.log(new Date().toISOString(), 'Авторизация пользователя:', userId, userName);
+async function authorizeUser(ctx, userId, userName, startParam, avatarUrl) {
+    console.log(new Date().toISOString(), 'Авторизация пользователя:', userId, userName, 'avatar:', avatarUrl);
 
     if (!userId) {
         console.error('❌ Не удалось получить userId');
@@ -42,7 +55,11 @@ async function authorizeUser(ctx, userId, userName, startParam) {
     }
 
     userStates.delete(userId);
-    userStates.set(userId, { referrerId });
+    userStates.set(userId, { 
+        referrerId,
+        avatarUrl,
+        step: 'start'
+    });
 
     await ctx.reply(
         `📄 В соответствии с Федеральным законом №152-ФЗ "О персональных данных",\n\n` +
@@ -54,30 +71,25 @@ async function authorizeUser(ctx, userId, userName, startParam) {
     return false;
 }
 
-// Получение userId из разных типов событий
-function getUserIdFromContext(ctx) {
-    return ctx.user_id || 
-           ctx.user?.user_id || 
-           ctx.message?.sender?.user_id || 
-           ctx.callback?.user?.user_id;
-}
-
 function handleStart(bot) {
-    // Обработчик запуска через интерфейс MAX
     bot.on('bot_started', async (ctx) => {
         const userId = getUserIdFromContext(ctx);
         const userName = ctx.user?.first_name || ctx.message?.sender?.first_name || 'Гость';
         const startParam = ctx.start_param || ctx.message?.body?.start_param;
+        const avatarUrl = getAvatarUrlFromContext(ctx);
+
+        console.log('📱 bot_started:', { userId, userName, avatarUrl });
         
-        await authorizeUser(ctx, userId, userName, startParam);
+        await authorizeUser(ctx, userId, userName, startParam, avatarUrl);
     });
 
-    // Обработчик команды /start
     bot.command('start', async (ctx) => {
         const userId = getUserIdFromContext(ctx);
         const userName = ctx.message?.sender?.first_name || 'Гость';
+        const avatarUrl = getAvatarUrlFromContext(ctx);
+
+        console.log('📱 /start command:', { userId, userName, avatarUrl });
         
-        // Извлекаем start_param из текста "/start КОД"
         let startParam = ctx.message?.body?.start_param;
         const fullText = ctx.message?.body?.text || '';
         
@@ -85,21 +97,25 @@ function handleStart(bot) {
             startParam = fullText.substring(7).trim();
         }
         
-        await authorizeUser(ctx, userId, userName, startParam);
+        await authorizeUser(ctx, userId, userName, startParam, avatarUrl);
     });
 }
 
 function handleAgreeProcessing(bot) {
     bot.action('agree_processing', async (ctx) => {
         const userId = ctx.callback?.user?.user_id;
-        const state = userStates.get(userId) || {};
+        const existingState = userStates.get(userId) || {};
         
         console.log('✅ Согласие получено от пользователя:', userId);
+        console.log('📦 existingState:', existingState);
+        
         userStates.set(userId, { 
             step: 'awaiting_phone',
-            referrerId: state.referrerId 
+            referrerId: existingState.referrerId,
+            avatarUrl: existingState.avatarUrl
         });
-        console.log('📝 Состояние сохранено:', userStates.get(userId));
+        
+        console.log('📝 Новое состояние:', userStates.get(userId));
 
         await ctx.reply(
             '📱 Для продолжения работы, пожалуйста, поделитесь своим номером телефона:',
@@ -114,8 +130,7 @@ function handleContact(bot) {
         const userId = message?.sender?.user_id;
         const state = userStates.get(userId);
 
-        console.log('🔍 userId:', userId);
-        console.log('🔍 state:', state);
+        console.log('🔍 Обработка контакта:', { userId, step: state?.step, avatarUrl: state?.avatarUrl });
 
         if (!state || state.step !== 'awaiting_phone') {
             console.log('⏭️ Пропускаем: нет состояния или не тот шаг');
@@ -139,7 +154,7 @@ function handleContact(bot) {
             await ctx.reply('🔍 Проверяем данные пациента...');
 
             const result = await getClientByPhone(phone);
-            console.log('📦 Результат API:', JSON.stringify(result, null, 2));
+            // console.log('📦 Результат API:', JSON.stringify(result, null, 2));
 
             if (result.success && result.client) {
                 const client = result.client;
@@ -157,7 +172,8 @@ function handleContact(bot) {
                     step: 'awaiting_confirm',
                     clientData: client,
                     phone: phone,
-                    referrerId: state.referrerId
+                    referrerId: state.referrerId,
+                    avatarUrl: state.avatarUrl
                 });
 
                 await ctx.reply(messageText, { attachments: [confirmKeyboard] });
@@ -175,22 +191,27 @@ function handleConfirmData(bot) {
     bot.action('confirm_data', async (ctx) => {
         const userId = ctx.callback?.user?.user_id;
         const state = userStates.get(userId);
+        
+        console.log('✅ Подтверждение данных:', { userId, state });
 
         if (!state || state.step !== 'awaiting_confirm') {
             await ctx.reply('❌ Сессия истекла. Нажмите /start');
             return;
         }
 
-        const result = await saveClientToDB(userId, state.clientData, state.phone, state.referrerId);
+        const avatarUrl = state.avatarUrl;
+        console.log('📸 Сохраняем аватар:', avatarUrl);
+
+        const result = await saveClientToDB(userId, state.clientData, state.phone, state.referrerId, avatarUrl);
 
         if (result) {
-            console.log(`✅ Клиент сохранен: ${userId}, пригласил: ${state.referrerId || 'никто'}`);
+            console.log(`✅ Клиент сохранен: ${userId}, пригласил: ${state.referrerId || 'никто'}, avatar: ${avatarUrl || 'нет'}`);
         }
 
         userStates.delete(userId);
 
         await ctx.reply(
-            `✅ Добро пожаловать!\n\nВы успешно авторизованы.`
+            `✅ Добро пожаловать!\n\nВы успешно авторизованы.\n\nДля входа в приложение нажмите кнопку Открыть`
         );
     });
 }

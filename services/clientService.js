@@ -28,7 +28,7 @@ async function getClientByPhone(phone) {
     }
 }
 
-async function saveClientToDB(userId, clientData, phone, invitedId = null) {
+async function saveClientToDB(userId, clientData, phone, invitedId = null, avatarUrl = null) {
     const clientCode = await generateUniqueCode();
     const refCode = await generateUniqueCode();
 
@@ -55,8 +55,8 @@ async function saveClientToDB(userId, clientData, phone, invitedId = null) {
         INSERT INTO public.client (
             user_id, full_name, phone, birth_date, reg_date, role, 
             client_code, ref_code, is_new, bonus_balance, clinic_person_id, 
-            data_processing, branch_id, location, invited_id, invitation_date
-        ) VALUES ($1, $2, $3, $4, NOW(), 'patient', $5, $6, true, $7, $8, true, $9, $10, $11, NOW())
+            data_processing, branch_id, location, invited_id, invitation_date, avatar_url
+        ) VALUES ($1, $2, $3, $4, NOW(), 'patient', $5, $6, true, $7, $8, true, $9, $10, $11, NOW(), $12)
         RETURNING *;
     `;
 
@@ -67,11 +67,12 @@ async function saveClientToDB(userId, clientData, phone, invitedId = null) {
         clientData.birthday || null,
         clientCode,
         refCode,
-        welcomeBonus,  // ← динамическое значение из БД
+        welcomeBonus,
         clinicPersonId,
-        null,  // branch_id
+        null,
         process.env.LOCATION,
-        invitedId ? Number(invitedId) : null
+        invitedId ? Number(invitedId) : null,
+        avatarUrl || null  // ← только это добавилось
     ];
 
     try {
