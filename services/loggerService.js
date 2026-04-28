@@ -33,33 +33,33 @@ const logger = {
         writeLog('bot_starts.log', data);
     },
 
-    // Отправка напоминания
-    reminderSent: (userId, scheduleId, kind, messageId, chatId) => {
-        const data = {
-            type: 'REMINDER_SENT',
-            userId,
-            scheduleId,
-            kind,
-            messageId,
-            chatId,
-            message: `Напоминание (${kind}) отправлено пользователю ${userId}`
-        };
-        console.log(`📨 ${data.message}`);
-        writeLog('reminders.log', data);
-    },
+  reminderSent: (messengerId, platform, scheduleId, kind, messageId, chatId) => {
+    const data = {
+        type: 'REMINDER_SENT',
+        messengerId,
+        platform,
+        scheduleId,
+        kind,
+        messageId,
+        chatId,
+        message: `Напоминание (${kind}) отправлено пользователю ${messengerId} (${platform})`
+    };
+    console.log(`📨 ${data.message}`);
+    writeLog('reminders.log', data);
+},
 
-    // Подтверждение напоминания
-    reminderAck: (reminderId, userId, kind) => {
-        const data = {
-            type: 'REMINDER_ACK',
-            reminderId,
-            userId,
-            kind,
-            message: `Напоминание ${reminderId} подтверждено пользователем ${userId}`
-        };
-        console.log(`✅ ${data.message}`);
-        writeLog('reminders.log', data);
-    },
+// Подтверждение напоминания
+reminderAck: (reminderId, messengerId, platform) => {
+    const data = {
+        type: 'REMINDER_ACK',
+        reminderId,
+        messengerId,
+        platform,
+        message: `Напоминание ${reminderId} подтверждено пользователем ${messengerId} (${platform})`
+    };
+    console.log(`✅ ${data.message}`);
+    writeLog('reminders.log', data);
+},
 
     // Ошибки
     error: (error, context = {}) => {

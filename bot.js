@@ -119,7 +119,6 @@ const checkAndSendPayments = async () => {
         const payments = await medCorePool.query(
     `SELECT * FROM payments 
      WHERE status = 'pending' 
-     AND sent_at IS NULL 
      AND clinic_id = 3
      AND location = $1
      LIMIT 10`,

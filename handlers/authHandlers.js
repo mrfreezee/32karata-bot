@@ -8,10 +8,10 @@ const userStates = new Map();
 
 // Получение userId из разных типов событий
 function getUserIdFromContext(ctx) {
-    return ctx.user_id || 
-           ctx.user?.user_id || 
-           ctx.message?.sender?.user_id || 
-           ctx.callback?.user?.user_id;
+    return ctx.user_id ||
+        ctx.user?.user_id ||
+        ctx.message?.sender?.user_id ||
+        ctx.callback?.user?.user_id;
 }
 
 // Получение avatarUrl из контекста
@@ -30,14 +30,14 @@ async function authorizeUser(ctx, userId, userName, startParam, avatarUrl) {
     }
 
     let referrerId = null;
-    
+
     if (startParam && startParam.length >= 6) {
         try {
             const referrerQuery = await pgPool.query(
                 `SELECT user_id, full_name FROM client WHERE ref_code = $1 LIMIT 1`,
                 [startParam]
             );
-            
+
             if (referrerQuery.rows.length > 0) {
                 referrerId = referrerQuery.rows[0].user_id;
                 console.log(`🎉 Найден пригласивший: ${referrerQuery.rows[0].full_name} (${referrerId})`);
@@ -55,7 +55,7 @@ async function authorizeUser(ctx, userId, userName, startParam, avatarUrl) {
     }
 
     userStates.delete(userId);
-    userStates.set(userId, { 
+    userStates.set(userId, {
         referrerId,
         avatarUrl,
         step: 'start'
@@ -67,7 +67,7 @@ async function authorizeUser(ctx, userId, userName, startParam, avatarUrl) {
         `Нажимая "Согласен", вы подтверждаете, что ознакомлены и согласны с условиями.`,
         { attachments: [agreeKeyboard] }
     );
-    
+
     return false;
 }
 
@@ -79,7 +79,7 @@ function handleStart(bot) {
         const avatarUrl = getAvatarUrlFromContext(ctx);
 
         console.log('📱 bot_started:', { userId, userName, avatarUrl });
-        
+
         await authorizeUser(ctx, userId, userName, startParam, avatarUrl);
     });
 
@@ -89,14 +89,14 @@ function handleStart(bot) {
         const avatarUrl = getAvatarUrlFromContext(ctx);
 
         console.log('📱 /start command:', { userId, userName, avatarUrl });
-        
+
         let startParam = ctx.message?.body?.start_param;
         const fullText = ctx.message?.body?.text || '';
-        
+
         if (!startParam && fullText.startsWith('/start ')) {
             startParam = fullText.substring(7).trim();
         }
-        
+
         await authorizeUser(ctx, userId, userName, startParam, avatarUrl);
     });
 }
@@ -105,16 +105,16 @@ function handleAgreeProcessing(bot) {
     bot.action('agree_processing', async (ctx) => {
         const userId = ctx.callback?.user?.user_id;
         const existingState = userStates.get(userId) || {};
-        
+
         console.log('✅ Согласие получено от пользователя:', userId);
         console.log('📦 existingState:', existingState);
-        
-        userStates.set(userId, { 
+
+        userStates.set(userId, {
             step: 'awaiting_phone',
             referrerId: existingState.referrerId,
             avatarUrl: existingState.avatarUrl
         });
-        
+
         console.log('📝 Новое состояние:', userStates.get(userId));
 
         await ctx.reply(
@@ -191,7 +191,7 @@ function handleConfirmData(bot) {
     bot.action('confirm_data', async (ctx) => {
         const userId = ctx.callback?.user?.user_id;
         const state = userStates.get(userId);
-        
+
         console.log('✅ Подтверждение данных:', { userId, state });
 
         if (!state || state.step !== 'awaiting_confirm') {
@@ -202,7 +202,7 @@ function handleConfirmData(bot) {
         const avatarUrl = state.avatarUrl;
         console.log('📸 Сохраняем аватар:', avatarUrl);
 
-        const result = await saveClientToDB(userId, state.clientData, state.phone, state.referrerId, avatarUrl);
+        const result = await saveClientToDB(userId, state.clientData, state.phone, 'max', state.referrerId, avatarUrl);
 
         if (result) {
             console.log(`✅ Клиент сохранен: ${userId}, пригласил: ${state.referrerId || 'никто'}, avatar: ${avatarUrl || 'нет'}`);
