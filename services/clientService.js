@@ -20,6 +20,19 @@ async function getClientByPhone(phone) {
             const clientKey = Object.keys(data.data)[0];
             const client = data.data[clientKey];
             console.log('🔍 Найден клиент:', client.display_name);
+
+            // Запрашиваем детальную информацию о клиенте
+            const clientId = client.id_client;
+            if (clientId) {
+                const detailUrl = `${API_CLIENT_URL}/api/i/client?token=${API_TOKEN}&secret=${API_SECRET}&id=${clientId}`;
+                const detailResponse = await fetch(detailUrl);
+                const detailData = await detailResponse.json();
+                if (detailData.data) {
+                    client.total_cash = detailData.data.total_cash || 0;
+                    console.log(`💰 total_cash: ${client.total_cash}`);
+                }
+            }
+
             return { success: true, client };
         }
         return { success: false, error: 'Пациент не найден' };
@@ -33,12 +46,12 @@ async function getClientByPhone(phone) {
 async function saveClientToDB(userId, clientData, phone, platform = 'max', invitedId = null, avatarUrl = null) {
     const cleanPhone = cleanPhoneNumber(phone);
     const messengerId = Number(userId);
-    
+
     // Определяем колонку для платформы
-    const idColumn = platform === 'telegram' ? 'tg_id' 
-                   : platform === 'max' ? 'max_id' 
-                   : 'vk_id';
-    
+    const idColumn = platform === 'telegram' ? 'tg_id'
+        : platform === 'max' ? 'max_id'
+            : 'vk_id';
+
     console.log('📝 saveClientToDB - параметры:', {
         messengerId,
         platform,
@@ -91,34 +104,37 @@ async function saveClientToDB(userId, clientData, phone, platform = 'max', invit
 
         // Если ID заполнен, но другим пользователем
         console.warn(`⚠️ Номер ${cleanPhone} уже привязан к ${idColumn}=${client[idColumn]}, а текущий ${idColumn}=${messengerId}`);
-        
-        // Всё равно обновляем данные, но логируем конфликт
+
+        console.warn(`⚠️ Номер ${cleanPhone} уже привязан к ${idColumn}=${client[idColumn]}, а текущий ${idColumn}=${messengerId}`);
+
+        const totalCash = clientData.total_cash || 0;
+
         const result = await pool.query(
             `UPDATE public.client 
-             SET full_name = $1,
-                 avatar_url = COALESCE($2, avatar_url),
-                 data_processing = true
-             WHERE id = $3
-             RETURNING *`,
-            [clientData.display_name || client.full_name, avatarUrl, client.id]
+     SET full_name = $1,
+         avatar_url = COALESCE($2, avatar_url),
+         data_processing = true,
+         total_cash = $4
+     WHERE id = $3
+     RETURNING *`,
+            [clientData.display_name || client.full_name, avatarUrl, client.id, totalCash]
         );
-        
+
         return result.rows[0];
-        
+
     } catch (error) {
         console.error('❌ Ошибка в saveClientToDB:', error);
         return null;
     }
 }
 
-/**
- * Создание нового клиента
- */
+
 async function createNewClient(messengerId, idColumn, clientData, phone, invitedId, avatarUrl) {
     const clientCode = await generateUniqueCode();
     const refCode = await generateUniqueCode();
     const clinicPersonId = clientData.id_client ? Number(clientData.id_client) : null;
-    
+    const totalCash = clientData.total_cash || 0;
+
     let welcomeBonus = 200;
     try {
         const bonusSettings = await medCorePool.query(
@@ -136,29 +152,30 @@ async function createNewClient(messengerId, idColumn, clientData, phone, invited
         INSERT INTO public.client (
             ${idColumn}, full_name, phone, birth_date, reg_date, role, 
             client_code, ref_code, is_new, bonus_balance, clinic_person_id, 
-            data_processing, branch_id, location, invited_id, invitation_date, avatar_url
-        ) VALUES ($1, $2, $3, $4, NOW(), 'patient', $5, $6, true, $7, $8, true, $9, $10, $11, NOW(), $12)
+            data_processing, branch_id, location, invited_id, invitation_date, avatar_url, total_cash
+        ) VALUES ($1, $2, $3, $4, NOW(), 'patient', $5, $6, true, $7, $8, true, $9, $10, $11, NOW(), $12, $13)
         RETURNING *;
     `;
 
     const values = [
-        messengerId,                                 // $1 - platform_id
-        clientData.display_name || null,             // $2 - full_name
-        phone,                                       // $3 - phone
-        clientData.birthday || null,                 // $4 - birth_date
-        clientCode,                                  // $5 - client_code
-        refCode,                                     // $6 - ref_code
-        welcomeBonus,                                // $7 - bonus_balance
-        clinicPersonId,                              // $8 - clinic_person_id
-        null,                                        // $9 - branch_id
-        process.env.LOCATION,                        // $10 - location
-        invitedId ? Number(invitedId) : null,        // $11 - invited_id
-        avatarUrl || null                            // $12 - avatar_url
+        messengerId,
+        clientData.display_name || null,
+        phone,
+        clientData.birthday || null,
+        clientCode,
+        refCode,
+        welcomeBonus,
+        clinicPersonId,
+        null,
+        process.env.LOCATION,
+        invitedId ? Number(invitedId) : null,
+        avatarUrl || null,
+        totalCash
     ];
 
     try {
         const result = await pool.query(query, values);
-        console.log(`✅ Новый клиент создан: ${idColumn}=${messengerId}, phone=${phone}, бонус=${welcomeBonus}`);
+        console.log(`✅ Новый клиент создан: ${idColumn}=${messengerId}, phone=${phone}, бонус=${welcomeBonus}, total_cash=${totalCash}`);
         return result.rows[0];
     } catch (error) {
         console.error('❌ Ошибка создания клиента:', error);
@@ -171,19 +188,22 @@ async function createNewClient(messengerId, idColumn, clientData, phone, invited
  */
 async function updateClientPlatformId(clientId, idColumn, messengerId, clientData, avatarUrl) {
     try {
+        const totalCash = clientData.total_cash || 0;
+
         const result = await pool.query(
             `UPDATE public.client 
              SET ${idColumn} = $1,
                  full_name = COALESCE($2, full_name),
                  avatar_url = COALESCE($3, avatar_url),
                  data_processing = true,
-                 is_new = false
+                 is_new = false,
+                 total_cash = $5
              WHERE id = $4
              RETURNING *`,
-            [messengerId, clientData.display_name, avatarUrl, clientId]
+            [messengerId, clientData.display_name, avatarUrl, clientId, totalCash]
         );
-        
-        console.log(`✅ ${idColumn} ${messengerId} привязан к записи ${clientId}`);
+
+        console.log(`✅ ${idColumn} ${messengerId} привязан к записи ${clientId}, total_cash=${totalCash}`);
         return result.rows[0];
     } catch (error) {
         console.error(`❌ Ошибка привязки ${idColumn}:`, error);
@@ -191,23 +211,25 @@ async function updateClientPlatformId(clientId, idColumn, messengerId, clientDat
     }
 }
 
-/**
- * Обновление данных существующего клиента (когда ID платформы уже совпадает)
- */
+
+
 async function updateClientData(clientId, clientData, avatarUrl) {
     try {
+        const totalCash = clientData.total_cash || 0;
+
         const result = await pool.query(
             `UPDATE public.client 
              SET full_name = COALESCE($1, full_name),
                  avatar_url = COALESCE($2, avatar_url),
                  data_processing = true,
-                 is_new = false
+                 is_new = false,
+                 total_cash = $4
              WHERE id = $3
              RETURNING *`,
-            [clientData.display_name, avatarUrl, clientId]
+            [clientData.display_name, avatarUrl, clientId, totalCash]
         );
-        
-        console.log(`✅ Данные клиента ${clientId} обновлены`);
+
+        console.log(`✅ Данные клиента ${clientId} обновлены, total_cash=${totalCash}`);
         return result.rows[0];
     } catch (error) {
         console.error('❌ Ошибка обновления данных:', error);
@@ -220,10 +242,10 @@ async function updateClientData(clientId, clientData, avatarUrl) {
  */
 async function checkClientExists(userId, platform = 'max') {
     const messengerId = Number(userId);
-    const idColumn = platform === 'telegram' ? 'tg_id' 
-                   : platform === 'max' ? 'max_id' 
-                   : 'vk_id';
-    
+    const idColumn = platform === 'telegram' ? 'tg_id'
+        : platform === 'max' ? 'max_id'
+            : 'vk_id';
+
     const result = await pool.query(
         `SELECT id, tg_id, max_id, vk_id, full_name, data_processing, phone
          FROM public.client 
@@ -231,7 +253,7 @@ async function checkClientExists(userId, platform = 'max') {
          LIMIT 1`,
         [messengerId, process.env.LOCATION]
     );
-    
+
     console.log('🔍 checkClientExists:', {
         platform,
         idColumn,
@@ -239,7 +261,7 @@ async function checkClientExists(userId, platform = 'max') {
         found: result.rows.length > 0,
         data_processing: result.rows[0]?.data_processing
     });
-    
+
     return result.rows.length > 0 && result.rows[0].data_processing === true;
 }
 
@@ -248,7 +270,7 @@ async function checkClientExists(userId, platform = 'max') {
  */
 async function findClientByPhone(phone) {
     const cleanPhone = cleanPhoneNumber(phone);
-    
+
     const result = await pool.query(
         `SELECT id, tg_id, max_id, vk_id, full_name, phone, data_processing
          FROM public.client 
@@ -256,7 +278,7 @@ async function findClientByPhone(phone) {
          LIMIT 1`,
         [cleanPhone, process.env.LOCATION]
     );
-    
+
     return result.rows.length > 0 ? result.rows[0] : null;
 }
 
@@ -281,7 +303,7 @@ async function getUnsentBonuses() {
               AND (p.tg_id IS NOT NULL OR p.max_id IS NOT NULL OR p.vk_id IS NOT NULL)
             ORDER BY sp.bonus_processed_at DESC
         `);
-        
+
         return result.rows;
     } catch (error) {
         console.error('❌ Ошибка получения неотправленных бонусов:', error);
@@ -312,11 +334,11 @@ async function markBonusAsNotified(bonusId, error = null) {
     }
 }
 
-module.exports = { 
-    getClientByPhone, 
-    saveClientToDB, 
-    checkClientExists, 
+module.exports = {
+    getClientByPhone,
+    saveClientToDB,
+    checkClientExists,
     findClientByPhone,
-    markBonusAsNotified, 
-    getUnsentBonuses 
+    markBonusAsNotified,
+    getUnsentBonuses
 };
