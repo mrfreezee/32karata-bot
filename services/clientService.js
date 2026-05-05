@@ -17,23 +17,25 @@ async function getClientByPhone(phone) {
         const data = await response.json();
 
         if (data.status && data.data && Object.keys(data.data).length > 0) {
-            const clientKey = Object.keys(data.data)[0];
-            const client = data.data[clientKey];
-            console.log('🔍 Найден клиент:', client.display_name);
-
-            // Запрашиваем детальную информацию о клиенте
-            const clientId = client.id_client;
-            if (clientId) {
-                const detailUrl = `${API_CLIENT_URL}/api/i/client?token=${API_TOKEN}&secret=${API_SECRET}&id=${clientId}`;
-                const detailResponse = await fetch(detailUrl);
-                const detailData = await detailResponse.json();
-                if (detailData.data) {
-                    client.total_cash = detailData.data.total_cash || 0;
-                    console.log(`💰 total_cash: ${client.total_cash}`);
+            const clients = Object.values(data.data);
+            
+            // Запрашиваем total_cash для каждого
+            for (const client of clients) {
+                const clientId = client.id_client;
+                if (clientId) {
+                    try {
+                        const detailUrl = `${API_CLIENT_URL}/api/i/client?token=${API_TOKEN}&secret=${API_SECRET}&id=${clientId}`;
+                        const detailResponse = await fetch(detailUrl);
+                        const detailData = await detailResponse.json();
+                        if (detailData.data) {
+                            client.total_cash = detailData.data.total_cash || 0;
+                        }
+                    } catch (e) {}
                 }
             }
-
-            return { success: true, client };
+            
+            console.log(`🔍 Найдено пациентов: ${clients.length}`);
+            return { success: true, clients };
         }
         return { success: false, error: 'Пациент не найден' };
     } catch (error) {
@@ -46,40 +48,33 @@ async function getClientByPhone(phone) {
 async function saveClientToDB(userId, clientData, phone, platform = 'max', invitedId = null, avatarUrl = null) {
     const cleanPhone = cleanPhoneNumber(phone);
     const messengerId = Number(userId);
+    const clinicPersonId = clientData.id_client ? Number(clientData.id_client) : null;
 
-    // Определяем колонку для платформы
     const idColumn = platform === 'telegram' ? 'tg_id'
         : platform === 'max' ? 'max_id'
             : 'vk_id';
 
     console.log('📝 saveClientToDB - параметры:', {
-        messengerId,
-        platform,
-        idColumn,
-        phone: cleanPhone,
-        clientName: clientData.display_name,
-        invitedId,
-        avatarUrl
+        messengerId, platform, idColumn, phone: cleanPhone,
+        clientName: clientData.display_name, invitedId, avatarUrl, clinicPersonId
     });
 
     try {
-        // 1. Ищем существующую запись по номеру телефона
+        // Ищем по clinic_person_id, а не по телефону
         const existingClient = await pool.query(
             `SELECT id, tg_id, max_id, vk_id, full_name, phone, clinic_person_id,
                     data_processing, is_new, location, bonus_balance, invited_id, referral_bonus_granted
              FROM public.client 
-             WHERE phone = $1 AND location = $2
+             WHERE clinic_person_id = $1 AND location = $2
              LIMIT 1`,
-            [cleanPhone, process.env.LOCATION]
+            [clinicPersonId, process.env.LOCATION]
         );
 
-        // 2. Если запись НЕ найдена — создаем новую
         if (existingClient.rows.length === 0) {
             console.log('➕ Новая запись: создаем клиента');
             return await createNewClient(messengerId, idColumn, clientData, cleanPhone, invitedId, avatarUrl);
         }
 
-        // 3. Запись найдена — проверяем и обновляем ID платформы если нужно
         const client = existingClient.rows[0];
         console.log('🔍 Найдена существующая запись:', {
             id: client.id,

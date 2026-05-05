@@ -48,21 +48,26 @@ function startIntervals(bot) {
     // === Напоминания раз в сутки в 9:00 ===
     let reminderTimeout;
     const scheduleDailyCheck = () => {
+        if (reminderTimeout) clearInterval(reminderTimeout);
+
         const now = dayjs();
         const next9am = dayjs().hour(9).minute(0).second(0);
         let delay = next9am.diff(now);
         if (delay <= 0) delay = dayjs().add(1, 'day').hour(9).minute(0).second(0).diff(now);
+
         reminderTimeout = setTimeout(() => {
-            checkAndSendReminders(bot);
-            setInterval(() => checkAndSendReminders(bot), 24 * 60 * 60 * 1000);
+            checkAndSendReminders(bot).catch(console.error);
+            setInterval(() => checkAndSendReminders(bot).catch(console.error), 24 * 60 * 60 * 1000);
         }, delay);
+
+        console.log(`⏰ Проверка напоминаний: раз в сутки в 09:00 (следующая через ${Math.floor(delay / 1000 / 60)} мин)`);
     };
     scheduleDailyCheck();
 
     // === Непрочитанные сообщения ===
    
    const checkUnreadMessages = async () => {
-    console.log('🔍 Проверка непрочитанных...');
+    // console.log('🔍 Проверка непрочитанных...');
 
     try {
         const clients = await pool.query(

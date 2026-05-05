@@ -3,6 +3,7 @@ const { getClientByPhone, checkClientExists, saveClientToDB } = require('../serv
 const { requestContactKeyboard, confirmKeyboard, agreeKeyboard } = require('../keyboards/keyboards');
 const { cleanPhoneNumber } = require('../utils/phoneHelper');
 const { pgPool } = require('../db');
+const { Keyboard } = require('@maxhub/max-bot-api');
 
 const userStates = new Map();
 
@@ -129,8 +130,11 @@ function handleContact(bot) {
         const message = ctx.message;
         const userId = message?.sender?.user_id;
         const state = userStates.get(userId);
-
-        console.log('🔍 Обработка контакта:', { userId, step: state?.step, avatarUrl: state?.avatarUrl });
+        console.log('📨 message_created:', {
+            hasText: !!ctx.message?.body?.text,
+            text: ctx.message?.body?.text,
+            attachments: ctx.message?.body?.attachments?.map(a => a.type)
+        });
 
         if (!state || state.step !== 'awaiting_phone') {
             console.log('⏭️ Пропускаем: нет состояния или не тот шаг');
@@ -141,48 +145,88 @@ function handleContact(bot) {
         const contactAttachment = attachments.find(a => a.type === 'contact');
 
         if (!contactAttachment) {
-            console.log('❌ Контакт не найден в attachments');
+            console.log('⏭️ Пропускаем: нет контакта');
             return;
         }
+
+        // Защита от повторной обработки
+        if (state._processingContact) {
+            console.log('⏭️ Пропускаем дубль контакта');
+            return;
+        }
+
+        // Ставим флаг обработки
+        userStates.set(userId, { ...state, _processingContact: true });
 
         const contact = contactAttachment.payload;
         const phone = contact?.vcf_info?.match(/TEL[^:]*:([^\r\n]+)/)?.[1];
 
-        console.log('📞 Найден номер телефона:', phone);
+        if (!phone) {
+            await ctx.reply('❌ Не удалось извлечь номер телефона');
+            userStates.set(userId, { ...state, _processingContact: false });
+            return;
+        }
 
-        if (phone) {
-            await ctx.reply('🔍 Проверяем данные пациента...');
+        await ctx.reply('🔍 Ищем пациентов...');
 
+        try {
             const result = await getClientByPhone(phone);
-            // console.log('📦 Результат API:', JSON.stringify(result, null, 2));
 
-            if (result.success && result.client) {
-                const client = result.client;
-                const hasVip = client.branches?.some(b => b.name === 'VIP');
+            if (!result.success || !result.clients?.length) {
+                await ctx.reply(`❌ Пациенты с номером ${phone} не найдены.\nОбратитесь в клинику.`);
+                userStates.delete(userId);
+                return;
+            }
 
-                let messageText = `📋 Найдены ваши данные:\n\n` +
-                    `👤 ФИО: ${client.display_name || 'Не указано'}\n` +
-                    `🎂 Дата рождения: ${client.birthday || 'Не указана'}\n` +
-                    `📞 Телефон: ${client.value || phone}\n`;
+            const clients = result.clients;
 
-                if (hasVip) messageText += `👑 Статус: VIP\n`;
-                messageText += `\n✅ Подтверждаете, что это ваши данные?`;
-
+            if (clients.length === 1) {
+                const client = clients[0];
                 userStates.set(userId, {
+                    ...state,
                     step: 'awaiting_confirm',
                     clientData: client,
                     phone: phone,
-                    referrerId: state.referrerId,
-                    avatarUrl: state.avatarUrl
+                    _processingContact: false
                 });
 
-                await ctx.reply(messageText, { attachments: [confirmKeyboard] });
-            } else {
-                await ctx.reply(`❌ Пациент с номером ${phone} не найден\n\nОбратитесь в клинику.`);
-                userStates.delete(userId);
+                const hasVip = client.branches?.some(b => b.name === 'VIP');
+                let msg = `📋 Найдены ваши данные:\n\n` +
+                    `👤 ФИО: ${client.display_name || 'Не указано'}\n` +
+                    `🎂 Дата рождения: ${client.birthday || 'Не указана'}\n` +
+                    `📞 Телефон: ${client.value || phone}\n`;
+                if (hasVip) msg += `👑 Статус: VIP\n`;
+                msg += `\n✅ Подтверждаете, что это ваши данные?`;
+
+                await ctx.reply(msg, { attachments: [confirmKeyboard] });
+                return;
             }
-        } else {
-            await ctx.reply('❌ Не удалось извлечь номер телефона из контакта');
+
+            // Несколько пациентов
+            userStates.set(userId, {
+                ...state,
+                step: 'selecting_patient',
+                phone: phone,
+                allClients: clients,
+                _processingContact: false
+            });
+
+            const buttons = clients.map((c, i) => [
+                Keyboard.button.callback(
+                    `${i + 1}. ${c.display_name || 'Без имени'} (${c.birthday || '—'})`,
+                    `select_client_${i}`
+                )
+            ]);
+
+            const selectKeyboard = Keyboard.inlineKeyboard(buttons);
+
+
+            await ctx.reply(`📋 Найдено ${clients.length} пациента. Выберите основного:`, 
+    { attachments: [selectKeyboard] }
+);
+        } catch (err) {
+            console.error('Ошибка обработки контакта:', err);
+            userStates.set(userId, { ...state, _processingContact: false });
         }
     });
 }
@@ -192,27 +236,30 @@ function handleConfirmData(bot) {
         const userId = ctx.callback?.user?.user_id;
         const state = userStates.get(userId);
 
-        console.log('✅ Подтверждение данных:', { userId, state });
-
         if (!state || state.step !== 'awaiting_confirm') {
             await ctx.reply('❌ Сессия истекла. Нажмите /start');
             return;
         }
 
         const avatarUrl = state.avatarUrl;
-        console.log('📸 Сохраняем аватар:', avatarUrl);
+        const clientData = state.clientData;
+        const phone = state.phone;
+        const referrerId = state.referrerId;
 
-        const result = await saveClientToDB(userId, state.clientData, state.phone, 'max', state.referrerId, avatarUrl);
+        // Сохраняем выбранного пациента как основного
+        await saveClientToDB(userId, clientData, phone, 'max', referrerId, avatarUrl);
 
-        if (result) {
-            console.log(`✅ Клиент сохранен: ${userId}, пригласил: ${state.referrerId || 'никто'}, avatar: ${avatarUrl || 'нет'}`);
+        // Сохраняем остальных пациентов с тем же номером
+        if (state.allClients && state.allClients.length > 1) {
+            for (const c of state.allClients) {
+                if (c.id_client !== clientData.id_client) {
+                    await saveClientToDB(userId, c, phone, 'max', referrerId, avatarUrl);
+                }
+            }
         }
 
         userStates.delete(userId);
-
-        await ctx.reply(
-            `✅ Добро пожаловать!\n\nВы успешно авторизованы.\n\nДля входа в приложение нажмите кнопку Открыть`
-        );
+        await ctx.reply(`✅ Добро пожаловать!\n\nВы успешно авторизованы.`);
     });
 }
 
@@ -224,11 +271,48 @@ function handleCancelAuth(bot) {
     });
 }
 
+function handleSelectClient(bot) {
+    bot.action(/select_client_(\d+)/, async (ctx) => {
+        const userId = ctx.callback?.user?.user_id;
+        const state = userStates.get(userId);
+        const index = parseInt(ctx.match[1]); // ← берем из регулярки
+
+        if (!state || state.step !== 'selecting_patient') {
+            await ctx.reply('❌ Сессия истекла. Нажмите /start');
+            return;
+        }
+
+        const client = state.allClients[index];
+
+        if (!client) {
+            await ctx.reply('❌ Ошибка выбора');
+            return;
+        }
+
+        userStates.set(userId, {
+            ...state,
+            step: 'awaiting_confirm',
+            clientData: client
+        });
+
+        const hasVip = client.branches?.some(b => b.name === 'VIP');
+        let msg = `📋 Найдены ваши данные:\n\n` +
+            `👤 ФИО: ${client.display_name || 'Не указано'}\n` +
+            `🎂 Дата рождения: ${client.birthday || 'Не указана'}\n` +
+            `📞 Телефон: ${client.value || state.phone}\n`;
+        if (hasVip) msg += `👑 Статус: VIP\n`;
+        msg += `\n✅ Подтверждаете, что это ваши данные?`;
+
+        await ctx.reply(msg, { attachments: [confirmKeyboard] });
+    });
+}
+
 module.exports = {
     handleStart,
     handleAgreeProcessing,
     handleContact,
     handleConfirmData,
     handleCancelAuth,
+    handleSelectClient,
     userStates
 };

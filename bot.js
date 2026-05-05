@@ -3,7 +3,8 @@ const { Bot } = require('@maxhub/max-bot-api');
 const config = require('./config');
 const {
     handleStart, handleAgreeProcessing, handleContact,
-    handleConfirmData, handleCancelAuth
+    handleConfirmData, handleCancelAuth,
+    handleSelectClient
 } = require('./handlers/authHandlers');
 const { handleHelp, handleCheck } = require('./handlers/commandHandlers');
 const { handleReminderConfirm } = require('./handlers/reminderHandlers');
@@ -40,6 +41,7 @@ function setupHandlers(botInstance) {
     handleHelp(botInstance);
     handleCheck(botInstance);
     handleReminderConfirm(botInstance);
+    handleSelectClient(botInstance)
     console.log('✅ Обработчики зарегистрированы');
 }
 
