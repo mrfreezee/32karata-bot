@@ -26,7 +26,7 @@ async function findPatientByName(shortName) {
     const { lastName, firstInitial, middleInitial } = normalized;
 
     const query = `
-        SELECT user_id, full_name, phone
+        SELECT id, tg_id, max_id, vk_id, full_name, phone
         FROM public.client 
         WHERE full_name ILIKE $1 AND data_processing = true
     `;

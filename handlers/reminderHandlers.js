@@ -26,7 +26,7 @@ async function sendReminder(bot, chatId, patient, doctorName, appointmentDate, k
             attachments: [keyboard]
         });
 
-        await createReminder(patient.user_id, scheduleId, kind, sentMessage.body.mid, chatId);
+        await createReminder(patient.max_id, scheduleId, kind, sentMessage.body.mid, chatId);
         console.log(`📨 Отправлено напоминание (${kind}) пациенту ${patient.full_name}`);
     } catch (error) {
         console.error(`Ошибка отправки:`, error.message);
@@ -75,18 +75,18 @@ async function checkAndSendReminders(bot) {
                 patientNotFound++;
                 continue;
             }
-            console.log(`      ✅ Пациент найден: ${patient.full_name} (${patient.user_id})`);
+            console.log(`      ✅ Пациент найден: ${patient.full_name} (${patient.max_id})`);
 
             const daysDiff = dayjs(task.date_start).startOf('day').diff(dayjs().startOf('day'), 'day');
 
             if (daysDiff === 3) {
                 remindersSent++;
                 console.log(`      📨 Отправляем напоминание за 3 дня`);
-                await sendReminder(bot, patient.user_id, patient, doctor.title, task.date_start, '3d', task.id);
+                await sendReminder(bot, patient.max_id, patient, doctor.title, task.date_start, '3d', task.id);
             } else if (daysDiff === 1) {
                 remindersSent++;
                 console.log(`      📨 Отправляем напоминание за 1 день`);
-                await sendReminder(bot, patient.user_id, patient, doctor.title, task.date_start, '1d', task.id);
+                await sendReminder(bot, patient.max_id, patient, doctor.title, task.date_start, '1d', task.id);
             } else {
                 daysNotMatch++;
                 console.log(`      ⏭️ Дней до записи ${daysDiff} - не отправляем`);
