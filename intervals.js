@@ -1,7 +1,7 @@
 // intervals.js (MAX версия)
 const dayjs = require('dayjs');
 const { Keyboard } = require('@maxhub/max-bot-api');
-const { getUnsentBonuses, markBonusAsNotified } = require('./services/clientService');
+const { getUnsentBonuses, markBonusAsNotified, processPendingMailings, processPermanentReminders } = require('./services/clientService');
 const { checkAndSendReminders } = require('./handlers/reminderHandlers');
 const { medCorePool, pool } = require('./db');
 
@@ -141,7 +141,19 @@ function startIntervals(bot) {
 };
     const unreadInterval = setInterval(checkUnreadMessages, 10 * 1000);
 
-    return { bonusInterval, paymentInterval, reminderTimeout, unreadInterval };
+
+    const mailingInterval = setInterval(() => {
+        processPendingMailings(bot).catch(console.error);
+    }, 10 * 60 * 1000);
+    setTimeout(() => processPendingMailings(bot).catch(console.error), 10000);
+
+    // === Постоянные напоминания каждые 5 минут ===
+    const permanentReminderInterval = setInterval(() => {
+        processPermanentReminders(bot).catch(console.error);
+    }, 10 * 60 * 1000);
+    setTimeout(() => processPermanentReminders(bot).catch(console.error), 15000);
+
+    return { bonusInterval, paymentInterval, reminderTimeout, unreadInterval, mailingInterval, permanentReminderInterval };
 }
 
 module.exports = { startIntervals };

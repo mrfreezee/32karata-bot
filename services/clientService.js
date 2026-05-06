@@ -329,11 +329,201 @@ async function markBonusAsNotified(bonusId, error = null) {
     }
 }
 
+async function processPendingMailings(bot) {
+  try {
+    // Получаем все неотправленные рассылки
+    const mailings = await medCorePool.query(`
+            SELECT * FROM mailings 
+            WHERE status = 'pending' 
+            ORDER BY created_at ASC
+        `);
+
+    if (mailings.rows.length === 0) {
+      console.log('📭 Нет pending рассылок');
+      return;
+    }
+
+    console.log(`📨 Найдено ${mailings.rows.length} рассылок для отправки`);
+
+    for (const mailing of mailings.rows) {
+      console.log(`\n📧 Обработка рассылки #${mailing.id}`);
+      console.log(`   Тип: ${mailing.recipient_type}`);
+      console.log(`   Клиника: ${mailing.clinic_id}`);
+
+      // Получаем получателей из таблицы mailing_recipients
+      const recipients = await medCorePool.query(`
+                SELECT 
+                    id,
+                    max_id,
+                    full_name,
+                    phone,
+                    sent,
+                    clinic_id
+                FROM mailing_recipients
+                WHERE mailing_id = $1 
+                    AND sent = false
+                    AND clinic_id = 3
+                    AND max_id IS NOT NULL
+            `, [mailing.id]);
+
+      if (recipients.rows.length === 0) {
+        console.log(`⚠️ Нет получателей для рассылки #${mailing.id}, помечаем как отправленную`);
+        await medCorePool.query(`
+                    UPDATE mailings 
+                    SET status = 'sent', sent_at = NOW() 
+                    WHERE id = $1
+                `, [mailing.id]);
+        continue;
+      }
+
+      console.log(`   Получателей: ${recipients.rows.length}`);
+
+      let sent = 0;
+      let failed = 0;
+
+      // Формируем сообщение
+      const fullMessage = mailing.message_title
+        ? `*${mailing.message_title}*\n\n${mailing.message_text}`
+        : mailing.message_text;
+
+      for (const recipient of recipients.rows) {
+        try {
+          await bot.api.sendMessageToUser(recipient.max_id, fullMessage, {
+            parse_mode: 'Markdown',
+            disable_web_page_preview: true
+          });
+
+          // Отмечаем как отправленное
+          await medCorePool.query(`
+                        UPDATE mailing_recipients 
+                        SET sent = true, sent_at = NOW() 
+                        WHERE id = $1
+                    `, [recipient.id]);
+
+          sent++;
+
+          if (sent % 10 === 0) {
+            console.log(`   ✅ Отправлено ${sent}/${recipients.rows.length}`);
+          }
+
+          await new Promise(r => setTimeout(r, 100));
+
+        } catch (error) {
+          if (error.response?.error_code === 403) {
+            console.log(`   ❌ Пользователь ${recipient.max_id} заблокировал бота`);
+          } else {
+            console.error(`   ❌ Ошибка отправки ${recipient.max_id}:`, error.message);
+          }
+          failed++;
+        }
+      }
+
+      // Обновляем статус рассылки
+      await medCorePool.query(`
+                UPDATE mailings 
+                SET status = 'sent', 
+                    sent_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = $1
+            `, [mailing.id]);
+
+      console.log(`✅ Рассылка #${mailing.id} завершена: отправлено ${sent}, ошибок ${failed}`);
+    }
+
+  } catch (error) {
+    console.error('❌ Ошибка в processPendingMailings:', error);
+  }
+}
+
+async function processPermanentReminders(bot) {
+  try {
+    // Получаем активные постоянные рассылки, которые не остановлены
+    const mailings = await medCorePool.query(`
+            SELECT 
+                pm.id,
+                pm.message_title,
+                pm.message_text,
+                pm.clinic_id 
+            FROM permanent_mailings pm
+            WHERE pm.status = 'active' 
+            AND pm.clinic_id = 3
+                AND (pm.stopped IS NULL OR pm.stopped = false)
+        `);
+
+    if (mailings.rows.length === 0) {
+      console.log('📭 Нет активных постоянных рассылок');
+      return;
+    }
+
+    console.log(`📨 Найдено ${mailings.rows.length} активных постоянных рассылок`);
+
+    for (const mailing of mailings.rows) {
+      // Получаем получателей со статусом 'pending' для этой клиники
+      const recipients = await medCorePool.query(`
+                SELECT 
+                    id,
+                    full_name,
+                    max_id,
+                    clinic_id
+                FROM permanent_mailing_recipients
+                WHERE mailing_id = $1 
+                    AND status = 'pending'
+                    AND first_message_sent = false
+                    AND max_id IS NOT NULL
+                    AND clinic_id = $2
+            `, [mailing.id, mailing.clinic_id]);
+
+      if (recipients.rows.length === 0) {
+        console.log(`   Нет получателей для рассылки #${mailing.id} (клиника ${mailing.clinic_id})`);
+        continue;
+      }
+
+      console.log(`   Рассылка #${mailing.id} (клиника ${mailing.clinic_id}): ${recipients.rows.length} получателей`);
+
+      let sent = 0;
+      const firstMessage = mailing.message_title
+        ? `*${mailing.message_title}*\n\n${mailing.message_text}`
+        : mailing.message_text;
+
+      for (const recipient of recipients.rows) {
+        try {
+          await bot.api.sendMessageToUser(recipient.max_id, firstMessage, {
+            parse_mode: 'Markdown',
+            disable_web_page_preview: true
+          });
+
+          await medCorePool.query(`
+                        UPDATE permanent_mailing_recipients 
+                        SET first_message_sent = true,
+                            first_message_sent_at = NOW(),
+                            status = 'waiting_for_reminder'
+                        WHERE id = $1
+                    `, [recipient.id]);
+
+          sent++;
+          console.log(`   ✅ Отправлено ${recipient.full_name} (${recipient.max_id})`);
+          await new Promise(r => setTimeout(r, 100));
+
+        } catch (error) {
+          console.error(`   ❌ Ошибка ${recipient.max_id}:`, error.message);
+        }
+      }
+
+      console.log(`   Отправлено: ${sent}/${recipients.rows.length}`);
+    }
+
+  } catch (error) {
+    console.error('❌ Ошибка в processPermanentReminders:', error);
+  }
+}
+
 module.exports = {
     getClientByPhone,
     saveClientToDB,
     checkClientExists,
     findClientByPhone,
     markBonusAsNotified,
-    getUnsentBonuses
+    getUnsentBonuses,
+    processPendingMailings,
+    processPermanentReminders
 };
