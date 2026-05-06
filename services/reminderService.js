@@ -46,7 +46,7 @@ async function updateReminderAck(reminderId, messengerId, platform) {
 async function checkExistingReminder(scheduleId) {
     const result = await pool.query(
         `SELECT id, kind, is_active, platform FROM reminders 
-         WHERE schedid = $1 AND is_active = true`,
+         WHERE schedid = $1`,
         [scheduleId]
     );
     return result.rows.length > 0;

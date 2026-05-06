@@ -1,32 +1,33 @@
 const { Keyboard } = require('@maxhub/max-bot-api');
 const dayjs = require('dayjs');
-const { pool } = require('../db'); 
+const { pool } = require('../db');
 const { getSchedule, findPatientByName } = require('../services/scheduleService');
 const { createReminder, updateReminderAck, checkExistingReminder } = require('../services/reminderService');
 
 async function sendReminder(bot, chatId, patient, doctorName, appointmentDate, kind, scheduleId) {
     const date = dayjs(appointmentDate).format('DD.MM.YYYY');
-    const hours = dayjs(appointmentDate).hour();
-    const minutes = dayjs(appointmentDate).minute();
+    const hours = String(dayjs(appointmentDate).hour()).padStart(2, '0');
+    const minutes = String(dayjs(appointmentDate).minute()).padStart(2, '0');
+    const time = `${hours}:${minutes}`;
 
-    let message = kind === '1d' 
-        ? `⏰ Напоминание!\nЗавтра у вас приём у врача\n🗓 Дата: ${date}\n👨🏻‍⚕️ Врач: ${doctorName}\n🕒 Время: ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
-        : `📅 Предварительное напоминание\nЧерез 3 дня у вас приём у врача\n🗓 Дата: ${date}\n👨🏻‍⚕️ Врач: ${doctorName}\n🕒 Время: ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+    let message;
+    if (kind === 'today') {
+        message = `⏰ Напоминание!\nСегодня у вас приём у врача\n🗓 Дата: ${date}\n👨🏻‍⚕️ Врач: ${doctorName}\n🕒 Время: ${time}`;
+    } else if (kind === '1d') {
+        message = `⏰ Напоминание!\nЗавтра у вас приём у врача\n🗓 Дата: ${date}\n👨🏻‍⚕️ Врач: ${doctorName}\n🕒 Время: ${time}`;
+    } else {
+        message = `📅 Предварительное напоминание\nЧерез 3 дня у вас приём у врача\n🗓 Дата: ${date}\n👨🏻‍⚕️ Врач: ${doctorName}\n🕒 Время: ${time}`;
+    }
 
-    // В MAX Bot API кнопки создаются через Keyboard.inlineKeyboard
     const keyboard = Keyboard.inlineKeyboard([
-        [
-            Keyboard.button.callback('✅ Подтверждаю', `confirm_reminder_${scheduleId}`)
-        ]
+        [Keyboard.button.callback('✅ Подтверждаю', `confirm_reminder_${scheduleId}`)]
     ]);
 
     try {
-        // В MAX Bot API клавиатура передается в attachments
         const sentMessage = await bot.api.sendMessageToUser(chatId, message, {
             attachments: [keyboard]
         });
-
-        await createReminder(patient.max_id, scheduleId, kind, sentMessage.body.mid, chatId);
+        await createReminder(chatId, 'max', scheduleId, kind, sentMessage.body.mid, chatId);
         console.log(`📨 Отправлено напоминание (${kind}) пациенту ${patient.full_name}`);
     } catch (error) {
         console.error(`Ошибка отправки:`, error.message);
@@ -34,67 +35,51 @@ async function sendReminder(bot, chatId, patient, doctorName, appointmentDate, k
 }
 
 async function checkAndSendReminders(bot) {
+    const TEST_USER_ID = '200682424'; // ← тестовый ID
+    
     const today = dayjs().format('YYYY-MM-DD');
     const dateEnd = dayjs().add(3, 'days').format('YYYY-MM-DD');
 
-    console.log(`\n=== Проверка напоминаний ${today} - ${dateEnd} ===\n`);
+    console.log(`\n=== Проверка напоминаний ${today} - ${dateEnd} (тестовый режим: ${TEST_USER_ID}) ===\n`);
 
     const schedule = await getSchedule(today, dateEnd);
 
     console.log('SCHEDULE length:', schedule.length);
     if (!schedule.length) return;
 
-    let doctorCount = 0;
-    let taskCount = 0;
-    let taskSkipped = 0;
-    let reminderExists = 0;
-    let patientNotFound = 0;
-    let daysNotMatch = 0;
-    let remindersSent = 0;
-
     for (const doctor of schedule) {
-        doctorCount++;
-        
         for (const task of doctor.tasks || []) {
-            taskCount++;
-            
-            if (task.title === 'Резерв' || task.title.includes('Медсестра')) {
-                taskSkipped++;
-                continue;
-            }
+            if (task.title === 'Резерв' || task.title.includes('Медсестра')) continue;
 
             const exists = await checkExistingReminder(task.id);
-            if (exists) {
-                reminderExists++;
-                console.log(`      ⏭️ Напоминание уже отправлено для задачи ${task.id}`);
-                continue;
-            }
+            if (exists) continue;
 
             const patient = await findPatientByName(task.title);
-            if (!patient) {
-                patientNotFound++;
-                continue;
-            }
-            console.log(`      ✅ Пациент найден: ${patient.full_name} (${patient.max_id})`);
+            if (!patient) continue;
+
+            const messengerId = patient.max_id || patient.tg_id || patient.vk_id;
+            
+            // if (String(messengerId) !== TEST_USER_ID) {
+            //     console.log(`      ⏭️ Пропускаем (не тестовый): ${patient.full_name}`);
+            //     continue;
+            // }
+
+            console.log(`      ✅ Пациент найден: ${patient.full_name}`);
 
             const daysDiff = dayjs(task.date_start).startOf('day').diff(dayjs().startOf('day'), 'day');
 
-            if (daysDiff === 3) {
-                remindersSent++;
-                console.log(`      📨 Отправляем напоминание за 3 дня`);
-                await sendReminder(bot, patient.max_id, patient, doctor.title, task.date_start, '3d', task.id);
+            if (daysDiff === 0) {
+                console.log(`      📨 Отправляем на сегодня`);
+                await sendReminder(bot, messengerId, patient, doctor.title, task.date_start, 'today', task.id);
             } else if (daysDiff === 1) {
-                remindersSent++;
-                console.log(`      📨 Отправляем напоминание за 1 день`);
-                await sendReminder(bot, patient.max_id, patient, doctor.title, task.date_start, '1d', task.id);
-            } else {
-                daysNotMatch++;
-                console.log(`      ⏭️ Дней до записи ${daysDiff} - не отправляем`);
+                console.log(`      📨 Отправляем за 1 день`);
+                await sendReminder(bot, messengerId, patient, doctor.title, task.date_start, '1d', task.id);
+            } else if (daysDiff === 3) {
+                console.log(`      📨 Отправляем за 3 дня`);
+                await sendReminder(bot, messengerId, patient, doctor.title, task.date_start, '3d', task.id);
             }
         }
     }
-
-
 }
 
 async function handleReminderConfirm(bot) {
@@ -118,7 +103,7 @@ async function handleReminderConfirm(bot) {
 
         const reminderId = reminder.rows[0].id;
         await updateReminderAck(reminderId, userId);
-        
+
         console.log(`✅ Подтверждено напоминание reminderId=${reminderId}`);
         await ctx.reply('✅ Спасибо! Подтверждение получено.');
     });

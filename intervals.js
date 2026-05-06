@@ -64,6 +64,16 @@ function startIntervals(bot) {
     };
     scheduleDailyCheck();
 
+    // let reminderTimeout;
+    // const scheduleDailyCheck = () => {
+    //     if (reminderTimeout) clearInterval(reminderTimeout);
+    //     reminderTimeout = setInterval(() => {
+    //         checkAndSendReminders(bot).catch(console.error);
+    //     }, 60 * 1000); // каждую минуту
+    //     console.log('⏰ Проверка напоминаний: каждую минуту (временно)');
+    // };
+    // scheduleDailyCheck();
+
     // === Непрочитанные сообщения ===
    
    const checkUnreadMessages = async () => {
