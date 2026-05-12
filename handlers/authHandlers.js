@@ -51,7 +51,7 @@ async function authorizeUser(ctx, userId, userName, startParam, avatarUrl) {
     const isAuthorized = await checkClientExists(userId);
 
     if (isAuthorized) {
-        await ctx.reply(`👋 С возвращением, ${userName}!`);
+        await ctx.reply(`👋 С возвращением, ${userName}!\n\nДля использования приложения нажмите кнопку Открыть в левом нижнем углу чата.`);
         return true;
     }
 
@@ -259,7 +259,7 @@ function handleConfirmData(bot) {
         }
 
         userStates.delete(userId);
-        await ctx.reply(`✅ Добро пожаловать!\n\nВы успешно авторизованы.`);
+        await ctx.reply(`✅ Добро пожаловать!\n\nВы успешно авторизованы.\n\nДля использования приложения нажмите кнопку Открыть в левом нижнем углу чата.`);
     });
 }
 
