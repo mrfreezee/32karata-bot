@@ -6,13 +6,34 @@ const API_TOKEN = process.env.API_TOKEN
 const API_SECRET = process.env.API_SECRET
 const API_CLIENT_URL = process.env.API_CLIENT_URL
 
+
 async function getSchedule(dateStart, dateEnd) {
     const url = `${API_CLIENT_URL}/api/mobile/schedule?token=${API_TOKEN}&secret=${API_SECRET}&date_start=${dateStart}&date_end=${dateEnd}`;
 
     try {
         const response = await fetch(url);
         const data = await response.json();
-        return data.data || [];
+        
+        const scheduleData = (data.data || []).map(doctor => {
+            const infoBlock = doctor.blocks?.find(b => b.type === 'info');
+            const branchID = infoBlock?.branchID || null;
+            const branchName = infoBlock?.branchName || null;
+            
+            const tasks = (doctor.tasks || []).map(task => ({
+                ...task,
+                branchID: task.branchID || branchID, 
+                branchName: task.branchName || branchName
+            }));
+            
+            return {
+                ...doctor,
+                tasks,
+                branchID,     
+                branchName      
+            };
+        });
+        
+        return scheduleData;
     } catch (error) {
         console.error('Ошибка получения расписания:', error);
         return [];

@@ -3,21 +3,18 @@ const dayjs = require('dayjs');
 const logger = require('./loggerService');
 
 
-async function createReminder(messengerId, platform = 'max', scheduleId, kind, messageId, chatId) {
+async function createReminder(messengerId, platform, scheduleId, kind, messageId, chatId, doctorName = null, appointmentDate = null, appointmentTime = null, branchId = null) {
     try {
-        const idColumn = platform === 'telegram' ? 'tg_id' 
-                       : platform === 'max' ? 'max_id' 
-                       : 'vk_id';
-        
+        const idColumn = platform === 'telegram' ? 'tg_id' : platform === 'max' ? 'max_id' : 'vk_id';
+
         const query = `
-            INSERT INTO reminders (${idColumn}, platform, schedid, kind, sent_at, is_active, message_id, chat_id)
-            VALUES ($1, $2, $3, $4, NOW(), true, $5, $6)
+            INSERT INTO reminders (${idColumn}, platform, schedid, kind, sent_at, is_active, message_id, chat_id, resend_count, doctor_name, appointment_date, appointment_time, branch_id)
+            VALUES ($1, $2, $3, $4, NOW(), true, $5, $6, 0, $7, $8, $9, $10)
             RETURNING id
         `;
-        const result = await pool.query(query, [messengerId, platform, scheduleId, kind, messageId, chatId]);
-        
+        const result = await pool.query(query, [messengerId, platform, scheduleId, kind, messageId, chatId, doctorName, appointmentDate, appointmentTime, branchId]);
+
         logger.reminderSent(messengerId, platform, scheduleId, kind, messageId, chatId);
-        
         return result.rows[0].id;
     } catch (error) {
         logger.error(error, { function: 'createReminder', messengerId, platform, scheduleId, kind });

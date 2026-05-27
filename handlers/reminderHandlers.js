@@ -4,19 +4,34 @@ const { pool } = require('../db');
 const { getSchedule, findPatientByName } = require('../services/scheduleService');
 const { createReminder, updateReminderAck, checkExistingReminder } = require('../services/reminderService');
 
-async function sendReminder(bot, chatId, patient, doctorName, appointmentDate, kind, scheduleId) {
+async function sendReminder(bot, chatId, patient, doctorName, appointmentDate, kind, scheduleId, branchId) {
     const date = dayjs(appointmentDate).format('DD.MM.YYYY');
     const hours = String(dayjs(appointmentDate).hour()).padStart(2, '0');
     const minutes = String(dayjs(appointmentDate).minute()).padStart(2, '0');
     const time = `${hours}:${minutes}`;
 
+    let branchAddress = '';
+    if (branchId) {
+        try {
+            const branch = await pool.query(
+                `SELECT address FROM branches WHERE branch_id = $1 LIMIT 1`,
+                [branchId]
+            );
+            if (branch.rows.length) {
+                branchAddress = `\n📍 ${branch.rows[0].address}`;
+            }
+        } catch (e) {
+            console.error('Ошибка получения адреса филиала:', e.message);
+        }
+    }
+
     let message;
     if (kind === 'today') {
-        message = `⏰ Напоминание!\nСегодня у вас приём у врача\n🗓 Дата: ${date}\n👨🏻‍⚕️ Врач: ${doctorName}\n🕒 Время: ${time}`;
+        message = `⏰ Напоминание!\nСегодня у вас приём у врача\n🗓 Дата: ${date}\n👨🏻‍⚕️ Врач: ${doctorName}\n🕒 Время: ${time}${branchAddress}`;
     } else if (kind === '1d') {
-        message = `⏰ Напоминание!\nЗавтра у вас приём у врача\n🗓 Дата: ${date}\n👨🏻‍⚕️ Врач: ${doctorName}\n🕒 Время: ${time}`;
+        message = `⏰ Напоминание!\nЗавтра у вас приём у врача\n🗓 Дата: ${date}\n👨🏻‍⚕️ Врач: ${doctorName}\n🕒 Время: ${time}${branchAddress}`;
     } else {
-        message = `📅 Предварительное напоминание\nЧерез 3 дня у вас приём у врача\n🗓 Дата: ${date}\n👨🏻‍⚕️ Врач: ${doctorName}\n🕒 Время: ${time}`;
+        message = `📅 Предварительное напоминание\nЧерез 3 дня у вас приём у врача\n🗓 Дата: ${date}\n👨🏻‍⚕️ Врач: ${doctorName}\n🕒 Время: ${time}${branchAddress}`;
     }
 
     const keyboard = Keyboard.inlineKeyboard([
@@ -27,15 +42,29 @@ async function sendReminder(bot, chatId, patient, doctorName, appointmentDate, k
         const sentMessage = await bot.api.sendMessageToUser(chatId, message, {
             attachments: [keyboard]
         });
-        await createReminder(chatId, 'max', scheduleId, kind, sentMessage.body.mid, chatId);
-        console.log(`📨 Отправлено напоминание (${kind}) пациенту ${patient.full_name}`);
+        
+        // ИСПРАВЛЕНО: все параметры в правильном порядке
+        await createReminder(
+            chatId,              // messengerId
+            'max',               // platform
+            scheduleId,          // scheduleId
+            kind,                // kind
+            sentMessage.body.mid, // messageId
+            chatId,              // chatId
+            doctorName,          // doctorName ← БЫЛО ПРОПУЩЕНО
+            appointmentDate,     // appointmentDate ← БЫЛО ПРОПУЩЕНО
+            time,                // appointmentTime ← БЫЛО ПРОПУЩЕНО
+            branchId             // branchId ← БЫЛО НА НЕПРАВИЛЬНОМ МЕСТЕ
+        );
+        
+        console.log(`📨 Отправлено напоминание (${kind}) пациенту ${patient.full_name}, branchId: ${branchId || 'нет'}`);
     } catch (error) {
         console.error(`Ошибка отправки:`, error.message);
     }
 }
 
 async function checkAndSendReminders(bot) {
-    const TEST_USER_ID = '200682424'; // ← тестовый ID
+    const TEST_USER_ID = '186795504';
     
     const today = dayjs().format('YYYY-MM-DD');
     const dateEnd = dayjs().add(3, 'days').format('YYYY-MM-DD');
@@ -48,6 +77,10 @@ async function checkAndSendReminders(bot) {
     if (!schedule.length) return;
 
     for (const doctor of schedule) {
+        // Получаем branchID из info-блока врача
+        const infoBlock = doctor.blocks?.find(b => b.type === 'info');
+        const doctorBranchID = infoBlock?.branchID || null;
+        
         for (const task of doctor.tasks || []) {
             if (task.title === 'Резерв' || task.title.includes('Медсестра')) continue;
 
@@ -64,19 +97,22 @@ async function checkAndSendReminders(bot) {
             //     continue;
             // }
 
-            console.log(`      ✅ Пациент найден: ${patient.full_name}`);
+            // Используем branchID из task или из doctor
+            const branchID = task.branchID || doctorBranchID;
+
+            console.log(`      ✅ Пациент найден: ${patient.full_name}, branchID: ${branchID}`);
 
             const daysDiff = dayjs(task.date_start).startOf('day').diff(dayjs().startOf('day'), 'day');
 
             if (daysDiff === 0) {
                 console.log(`      📨 Отправляем на сегодня`);
-                await sendReminder(bot, messengerId, patient, doctor.title, task.date_start, 'today', task.id);
+                await sendReminder(bot, messengerId, patient, doctor.title, task.date_start, 'today', task.id, branchID);
             } else if (daysDiff === 1) {
                 console.log(`      📨 Отправляем за 1 день`);
-                await sendReminder(bot, messengerId, patient, doctor.title, task.date_start, '1d', task.id);
+                await sendReminder(bot, messengerId, patient, doctor.title, task.date_start, '1d', task.id, branchID);
             } else if (daysDiff === 3) {
                 console.log(`      📨 Отправляем за 3 дня`);
-                await sendReminder(bot, messengerId, patient, doctor.title, task.date_start, '3d', task.id);
+                await sendReminder(bot, messengerId, patient, doctor.title, task.date_start, '3d', task.id, branchID);
             }
         }
     }

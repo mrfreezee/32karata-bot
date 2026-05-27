@@ -45,6 +45,22 @@ function setupHandlers(botInstance) {
     console.log('✅ Обработчики зарегистрированы');
 }
 
+process.on('uncaughtException', (err) => {
+    console.error('❌ Необработанная ошибка:', err.message);
+    if (err.message?.includes('Connect Timeout') || err.message?.includes('fetch failed')) {
+        console.log('🔄 Перезапуск из-за сетевой ошибки...');
+        process.exit(1);
+    }
+});
+
+process.on('unhandledRejection', (reason) => {
+    console.error('❌ Необработанный reject:', reason?.message || reason);
+    if (reason?.message?.includes('Connect Timeout') || reason?.message?.includes('fetch failed')) {
+        console.log('🔄 Перезапуск из-за сетевой ошибки...');
+        process.exit(1);
+    }
+});
+
 function init() {
     console.log('🚀 Инициализация MAX бота...');
     bot = createBot();
