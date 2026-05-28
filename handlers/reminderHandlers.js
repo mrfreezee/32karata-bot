@@ -1,10 +1,10 @@
 const { Keyboard } = require('@maxhub/max-bot-api');
 const dayjs = require('dayjs');
 const { pool } = require('../db');
-const { getSchedule, findPatientByName } = require('../services/scheduleService');
+const { getSchedule, findPatientByName, findPatientByClinicPersonId } = require('../services/scheduleService');
 const { createReminder, updateReminderAck, checkExistingReminder } = require('../services/reminderService');
 
-async function sendReminder(bot, chatId, patient, doctorName, appointmentDate, kind, scheduleId, branchId) {
+async function sendReminder(bot, chatId, patient, doctorName, appointmentDate, kind, scheduleId, branchId, clinicPatientId) {
     const date = dayjs(appointmentDate).format('DD.MM.YYYY');
     const hours = String(dayjs(appointmentDate).hour()).padStart(2, '0');
     const minutes = String(dayjs(appointmentDate).minute()).padStart(2, '0');
@@ -43,18 +43,18 @@ async function sendReminder(bot, chatId, patient, doctorName, appointmentDate, k
             attachments: [keyboard]
         });
         
-        // ИСПРАВЛЕНО: все параметры в правильном порядке
         await createReminder(
-            chatId,              // messengerId
-            'max',               // platform
-            scheduleId,          // scheduleId
-            kind,                // kind
-            sentMessage.body.mid, // messageId
-            chatId,              // chatId
-            doctorName,          // doctorName ← БЫЛО ПРОПУЩЕНО
-            appointmentDate,     // appointmentDate ← БЫЛО ПРОПУЩЕНО
-            time,                // appointmentTime ← БЫЛО ПРОПУЩЕНО
-            branchId             // branchId ← БЫЛО НА НЕПРАВИЛЬНОМ МЕСТЕ
+            chatId,            
+            'max',              
+            scheduleId,          
+            kind,                
+            sentMessage.body.mid, 
+            chatId,              
+            doctorName,          
+            appointmentDate,   
+            time,              
+            branchId,
+            clinicPatientId         
         );
         
         console.log(`📨 Отправлено напоминание (${kind}) пациенту ${patient.full_name}, branchId: ${branchId || 'нет'}`);
@@ -77,7 +77,6 @@ async function checkAndSendReminders(bot) {
     if (!schedule.length) return;
 
     for (const doctor of schedule) {
-        // Получаем branchID из info-блока врача
         const infoBlock = doctor.blocks?.find(b => b.type === 'info');
         const doctorBranchID = infoBlock?.branchID || null;
         
@@ -87,32 +86,58 @@ async function checkAndSendReminders(bot) {
             const exists = await checkExistingReminder(task.id);
             if (exists) continue;
 
-            const patient = await findPatientByName(task.title);
-            if (!patient) continue;
+            // Ищем пациента по patientID (clinic_person_id)
+            const clinicPersonId = task.patientID;
+            if (!clinicPersonId) {
+                console.log(`      ⚠️ Нет patientID для task.id=${task.id}, пропускаем`);
+                continue;
+            }
 
-            const messengerId = patient.max_id || patient.tg_id || patient.vk_id;
+            const patients = await findPatientByClinicPersonId(clinicPersonId);
+            if (!patients || patients.length === 0) {
+                console.log(`      ⚠️ Пациент не найден: clinic_person_id=${clinicPersonId}`);
+                continue;
+            }
+
+            // Берём первого подходящего пациента с messengerId
+            let patient = null;
+            let messengerId = null;
             
-            // if (String(messengerId) !== TEST_USER_ID) {
-            //     console.log(`      ⏭️ Пропускаем (не тестовый): ${patient.full_name}`);
-            //     continue;
-            // }
+            for (const p of patients) {
+                const mid = p.max_id || p.tg_id || p.vk_id;
+                if (mid) {
+                    patient = p;
+                    messengerId = mid;
+                    break;
+                }
+            }
 
-            // Используем branchID из task или из doctor
+            if (!patient || !messengerId) {
+                console.log(`      ⚠️ Нет messengerId для clinic_person_id=${clinicPersonId}`);
+                continue;
+            }
+
+            // Для тестового режима
+            if (String(messengerId) !== TEST_USER_ID) {
+                console.log(`      ⏭️ Пропускаем (не тестовый): ${patient.full_name}`);
+                continue;
+            }
+
             const branchID = task.branchID || doctorBranchID;
 
-            console.log(`      ✅ Пациент найден: ${patient.full_name}, branchID: ${branchID}`);
+            console.log(`      ✅ Пациент: ${patient.full_name} (clinic_person_id=${clinicPersonId}), branchID: ${branchID}`);
 
             const daysDiff = dayjs(task.date_start).startOf('day').diff(dayjs().startOf('day'), 'day');
 
             if (daysDiff === 0) {
                 console.log(`      📨 Отправляем на сегодня`);
-                await sendReminder(bot, messengerId, patient, doctor.title, task.date_start, 'today', task.id, branchID);
+                await sendReminder(bot, messengerId, patient, doctor.title, task.date_start, 'today', task.id, branchID, clinicPersonId);
             } else if (daysDiff === 1) {
                 console.log(`      📨 Отправляем за 1 день`);
-                await sendReminder(bot, messengerId, patient, doctor.title, task.date_start, '1d', task.id, branchID);
+                await sendReminder(bot, messengerId, patient, doctor.title, task.date_start, '1d', task.id, branchID, clinicPersonId);
             } else if (daysDiff === 3) {
                 console.log(`      📨 Отправляем за 3 дня`);
-                await sendReminder(bot, messengerId, patient, doctor.title, task.date_start, '3d', task.id, branchID);
+                await sendReminder(bot, messengerId, patient, doctor.title, task.date_start, '3d', task.id, branchID, clinicPersonId);
             }
         }
     }
@@ -127,13 +152,13 @@ async function handleReminderConfirm(bot) {
 
         // Находим reminder по schedid, а не по id!
         const reminder = await pool.query(
-            `SELECT id FROM reminders WHERE schedid = $1 AND is_active = true`,
+            `SELECT id FROM reminders WHERE schedid = $1`,
             [scheduleId]
         );
 
         if (reminder.rows.length === 0) {
             console.log(`❌ Напоминание не найдено для scheduleId ${scheduleId}`);
-            await ctx.reply('❌ Напоминание не найдено или уже обработано');
+            // await ctx.reply('❌ Напоминание не найдено или уже обработано');
             return;
         }
 

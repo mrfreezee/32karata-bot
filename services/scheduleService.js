@@ -75,4 +75,25 @@ async function findPatientByName(shortName) {
     return null;
 }
 
-module.exports = { getSchedule, findPatientByName };
+async function findPatientByClinicPersonId(clinicPersonId) {
+    if (!clinicPersonId) return null;
+
+    const query = `
+        SELECT id, tg_id, max_id, vk_id, full_name, phone, clinic_person_id
+        FROM public.client 
+        WHERE clinic_person_id = $1 
+          AND data_processing = true
+        ORDER BY id
+    `;
+
+    const result = await pool.query(query, [String(clinicPersonId)]);
+
+    if (result.rows.length > 0) {
+        console.log(`   🔍 Найдено ${result.rows.length} пациентов с clinic_person_id=${clinicPersonId}`);
+        return result.rows; // Возвращаем всех (может быть несколько с одним телефоном)
+    }
+
+    return null;
+}
+
+module.exports = { getSchedule, findPatientByName, findPatientByClinicPersonId };
