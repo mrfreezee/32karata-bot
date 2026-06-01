@@ -13,26 +13,49 @@ async function getSchedule(dateStart, dateEnd) {
     try {
         const response = await fetch(url);
         const data = await response.json();
-        
+
         const scheduleData = (data.data || []).map(doctor => {
-            const infoBlock = doctor.blocks?.find(b => b.type === 'info');
-            const branchID = infoBlock?.branchID || null;
-            const branchName = infoBlock?.branchName || null;
-            
-            const tasks = (doctor.tasks || []).map(task => ({
-                ...task,
-                branchID: task.branchID || branchID, 
-                branchName: task.branchName || branchName
-            }));
-            
+            const tasks = (doctor.tasks || []).map(task => {
+                // Ищем info блок, который охватывает время задачи
+                const taskStart = task.date_start; // "2026-06-04 15:45:00"
+                const taskEnd = task.date_end;     // "2026-06-04 16:30:00"
+                
+                const infoBlock = doctor.blocks?.find(b => {
+                    if (b.type !== 'info') return false;
+                    // Блок охватывает задачу, если задача внутри интервала блока
+                    return b.date_start <= taskStart && b.date_end >= taskEnd;
+                });
+
+                // Fallback: если не нашли по времени — ищем по дате
+                const fallbackBlock = !infoBlock 
+                    ? doctor.blocks?.find(b => {
+                        if (b.type !== 'info') return false;
+                        const blockDate = b.date_start?.split(' ')[0];
+                        const taskDate = taskStart?.split(' ')[0];
+                        return blockDate === taskDate;
+                    })
+                    : null;
+
+                const bestBlock = infoBlock || fallbackBlock || doctor.blocks?.find(b => b.type === 'info');
+                
+                const branchID = bestBlock?.branchID || null;
+                const branchName = bestBlock?.branchName || null;
+
+                return {
+                    ...task,
+                    branchID: task.branchID || branchID,
+                    branchName: task.branchName || branchName
+                };
+            });
+
             return {
                 ...doctor,
                 tasks,
-                branchID,     
-                branchName      
+                branchID: doctor.blocks?.find(b => b.type === 'info')?.branchID || null,
+                branchName: doctor.blocks?.find(b => b.type === 'info')?.branchName || null
             };
         });
-        
+
         return scheduleData;
     } catch (error) {
         console.error('Ошибка получения расписания:', error);

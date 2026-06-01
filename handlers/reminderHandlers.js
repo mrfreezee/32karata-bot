@@ -73,6 +73,14 @@ async function checkAndSendReminders(bot) {
 
     const schedule = await getSchedule(today, dateEnd);
 
+    for (const doctor of schedule) {
+    for (const task of doctor.tasks || []) {
+        if (task.id === 254178) {
+            console.log('🔍 TASK 254178:', JSON.stringify(task, null, 2));
+        }
+    }
+}
+
     console.log('SCHEDULE length:', schedule.length);
     if (!schedule.length) return;
 
@@ -83,19 +91,20 @@ async function checkAndSendReminders(bot) {
         for (const task of doctor.tasks || []) {
             if (task.title === 'Резерв' || task.title.includes('Медсестра')) continue;
 
+
+
             const exists = await checkExistingReminder(task.id);
             if (exists) continue;
 
             // Ищем пациента по patientID (clinic_person_id)
             const clinicPersonId = task.patientID;
             if (!clinicPersonId) {
-                console.log(`      ⚠️ Нет patientID для task.id=${task.id}, пропускаем`);
                 continue;
             }
 
             const patients = await findPatientByClinicPersonId(clinicPersonId);
             if (!patients || patients.length === 0) {
-                console.log(`      ⚠️ Пациент не найден: clinic_person_id=${clinicPersonId}`);
+                // console.log(`      ⚠️ Пациент не найден: clinic_person_id=${clinicPersonId}`);
                 continue;
             }
 
@@ -117,11 +126,10 @@ async function checkAndSendReminders(bot) {
                 continue;
             }
 
-            // Для тестового режима
-            if (String(messengerId) !== TEST_USER_ID) {
-                console.log(`      ⏭️ Пропускаем (не тестовый): ${patient.full_name}`);
-                continue;
-            }
+            // if (String(messengerId) !== TEST_USER_ID) {
+            //     console.log(`      ⏭️ Пропускаем (не тестовый): ${patient.full_name}`);
+            //     continue;
+            // }
 
             const branchID = task.branchID || doctorBranchID;
 
