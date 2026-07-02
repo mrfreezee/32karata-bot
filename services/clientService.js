@@ -10,38 +10,70 @@ const API_CLIENT_URL = process.env.API_CLIENT_URL;
 
 async function getClientByPhone(phone) {
     const cleanPhone = cleanPhoneNumber(phone);
-    const url = `${API_CLIENT_URL}/api/client_by_phone?token=${API_TOKEN}&secret=${API_SECRET}&phone=${cleanPhone}`;
-
-    try {
-        const response = await fetch(url);
-        const data = await response.json();
-
-        if (data.status && data.data && Object.keys(data.data).length > 0) {
-            const clients = Object.values(data.data);
-            
-            // Запрашиваем total_cash для каждого
-            for (const client of clients) {
-                const clientId = client.id_client;
-                if (clientId) {
-                    try {
-                        const detailUrl = `${API_CLIENT_URL}/api/i/client?token=${API_TOKEN}&secret=${API_SECRET}&id=${clientId}`;
-                        const detailResponse = await fetch(detailUrl);
-                        const detailData = await detailResponse.json();
-                        if (detailData.data) {
-                            client.total_cash = detailData.data.total_cash || 0;
-                        }
-                    } catch (e) {}
-                }
-            }
-            
-            console.log(`🔍 Найдено пациентов: ${clients.length}`);
-            return { success: true, clients };
-        }
-        return { success: false, error: 'Пациент не найден' };
-    } catch (error) {
-        console.error('Ошибка API:', error);
-        return { success: false, error: 'Ошибка соединения' };
+    
+    // 🔥 Ищем оба варианта: и с 7, и с 8
+    const phoneVariants = [];
+    
+    // Вариант с 7 (международный формат)
+    if (cleanPhone.startsWith('7')) {
+        phoneVariants.push(cleanPhone);
+        // Добавляем вариант с 8
+        phoneVariants.push('8' + cleanPhone.slice(1));
+    } 
+    // Вариант с 8 (российский формат)
+    else if (cleanPhone.startsWith('8')) {
+        phoneVariants.push(cleanPhone);
+        // Добавляем вариант с 7
+        phoneVariants.push('7' + cleanPhone.slice(1));
+    } 
+    else if (cleanPhone.length === 10 && cleanPhone.startsWith('9')) {
+        phoneVariants.push('7' + cleanPhone);
+        phoneVariants.push('8' + cleanPhone);
+    } 
+    // Если номер уже нормализован
+    else {
+        phoneVariants.push(cleanPhone);
     }
+
+    // Убираем дубликаты
+    const uniqueVariants = [...new Set(phoneVariants)];
+    
+    console.log(`📱 Поиск по номерам:`, uniqueVariants);
+
+    // Пробуем найти пациента по каждому варианту
+    for (const variant of uniqueVariants) {
+        const url = `${API_CLIENT_URL}/api/client_by_phone?token=${API_TOKEN}&secret=${API_SECRET}&phone=${variant}`;
+        
+        try {
+            const response = await fetch(url);
+            const data = await response.json();
+
+            if (data.status && data.data && Object.keys(data.data).length > 0) {
+                const clients = Object.values(data.data);
+
+                for (const client of clients) {
+                    const clientId = client.id_client;
+                    if (clientId) {
+                        try {
+                            const detailUrl = `${API_CLIENT_URL}/api/i/client?token=${API_TOKEN}&secret=${API_SECRET}&id=${clientId}`;
+                            const detailResponse = await fetch(detailUrl);
+                            const detailData = await detailResponse.json();
+                            if (detailData.data) {
+                                client.total_cash = Math.round(detailData.data.total_cash || 0);
+                            }
+                        } catch (e) { }
+                    }
+                }
+
+                console.log(`🔍 Найдено пациентов по номеру ${variant}: ${clients.length}`);
+                return { success: true, clients };
+            }
+        } catch (error) {
+            console.error(`Ошибка API для номера ${variant}:`, error.message);
+        }
+    }
+
+    return { success: false, error: 'Пациент не найден' };
 }
 
 
@@ -330,28 +362,28 @@ async function markBonusAsNotified(bonusId, error = null) {
 }
 
 async function processPendingMailings(bot) {
-  try {
-    // Получаем все неотправленные рассылки
-    const mailings = await medCorePool.query(`
+    try {
+        // Получаем все неотправленные рассылки
+        const mailings = await medCorePool.query(`
             SELECT * FROM mailings 
             WHERE status = 'pending' 
             ORDER BY created_at ASC
         `);
 
-    if (mailings.rows.length === 0) {
-      console.log('📭 Нет pending рассылок');
-      return;
-    }
+        if (mailings.rows.length === 0) {
+            console.log('📭 Нет pending рассылок');
+            return;
+        }
 
-    console.log(`📨 Найдено ${mailings.rows.length} рассылок для отправки`);
+        console.log(`📨 Найдено ${mailings.rows.length} рассылок для отправки`);
 
-    for (const mailing of mailings.rows) {
-      console.log(`\n📧 Обработка рассылки #${mailing.id}`);
-      console.log(`   Тип: ${mailing.recipient_type}`);
-      console.log(`   Клиника: ${mailing.clinic_id}`);
+        for (const mailing of mailings.rows) {
+            console.log(`\n📧 Обработка рассылки #${mailing.id}`);
+            console.log(`   Тип: ${mailing.recipient_type}`);
+            console.log(`   Клиника: ${mailing.clinic_id}`);
 
-      // Получаем получателей из таблицы mailing_recipients
-      const recipients = await medCorePool.query(`
+            // Получаем получателей из таблицы mailing_recipients
+            const recipients = await medCorePool.query(`
                 SELECT 
                     id,
                     max_id,
@@ -366,60 +398,60 @@ async function processPendingMailings(bot) {
                     AND max_id IS NOT NULL
             `, [mailing.id]);
 
-      if (recipients.rows.length === 0) {
-        console.log(`⚠️ Нет получателей для рассылки #${mailing.id}, помечаем как отправленную`);
-        await medCorePool.query(`
+            if (recipients.rows.length === 0) {
+                console.log(`⚠️ Нет получателей для рассылки #${mailing.id}, помечаем как отправленную`);
+                await medCorePool.query(`
                     UPDATE mailings 
                     SET status = 'sent', sent_at = NOW() 
                     WHERE id = $1
                 `, [mailing.id]);
-        continue;
-      }
+                continue;
+            }
 
-      console.log(`   Получателей: ${recipients.rows.length}`);
+            console.log(`   Получателей: ${recipients.rows.length}`);
 
-      let sent = 0;
-      let failed = 0;
+            let sent = 0;
+            let failed = 0;
 
-      // Формируем сообщение
-      const fullMessage = mailing.message_title
-        ? `*${mailing.message_title}*\n\n${mailing.message_text}`
-        : mailing.message_text;
+            // Формируем сообщение
+            const fullMessage = mailing.message_title
+                ? `*${mailing.message_title}*\n\n${mailing.message_text}`
+                : mailing.message_text;
 
-      for (const recipient of recipients.rows) {
-        try {
-          await bot.api.sendMessageToUser(recipient.max_id, fullMessage, {
-            parse_mode: 'Markdown',
-            disable_web_page_preview: true
-          });
+            for (const recipient of recipients.rows) {
+                try {
+                    await bot.api.sendMessageToUser(recipient.max_id, fullMessage, {
+                        parse_mode: 'Markdown',
+                        disable_web_page_preview: true
+                    });
 
-          // Отмечаем как отправленное
-          await medCorePool.query(`
+                    // Отмечаем как отправленное
+                    await medCorePool.query(`
                         UPDATE mailing_recipients 
                         SET sent = true, sent_at = NOW() 
                         WHERE id = $1
                     `, [recipient.id]);
 
-          sent++;
+                    sent++;
 
-          if (sent % 10 === 0) {
-            console.log(`   ✅ Отправлено ${sent}/${recipients.rows.length}`);
-          }
+                    if (sent % 10 === 0) {
+                        console.log(`   ✅ Отправлено ${sent}/${recipients.rows.length}`);
+                    }
 
-          await new Promise(r => setTimeout(r, 100));
+                    await new Promise(r => setTimeout(r, 100));
 
-        } catch (error) {
-          if (error.response?.error_code === 403) {
-            console.log(`   ❌ Пользователь ${recipient.max_id} заблокировал бота`);
-          } else {
-            console.error(`   ❌ Ошибка отправки ${recipient.max_id}:`, error.message);
-          }
-          failed++;
-        }
-      }
+                } catch (error) {
+                    if (error.response?.error_code === 403) {
+                        console.log(`   ❌ Пользователь ${recipient.max_id} заблокировал бота`);
+                    } else {
+                        console.error(`   ❌ Ошибка отправки ${recipient.max_id}:`, error.message);
+                    }
+                    failed++;
+                }
+            }
 
-      // Обновляем статус рассылки
-      await medCorePool.query(`
+            // Обновляем статус рассылки
+            await medCorePool.query(`
                 UPDATE mailings 
                 SET status = 'sent', 
                     sent_at = NOW(),
@@ -427,18 +459,18 @@ async function processPendingMailings(bot) {
                 WHERE id = $1
             `, [mailing.id]);
 
-      console.log(`✅ Рассылка #${mailing.id} завершена: отправлено ${sent}, ошибок ${failed}`);
-    }
+            console.log(`✅ Рассылка #${mailing.id} завершена: отправлено ${sent}, ошибок ${failed}`);
+        }
 
-  } catch (error) {
-    console.error('❌ Ошибка в processPendingMailings:', error);
-  }
+    } catch (error) {
+        console.error('❌ Ошибка в processPendingMailings:', error);
+    }
 }
 
 async function processPermanentReminders(bot) {
-  try {
-    // Получаем активные постоянные рассылки, которые не остановлены
-    const mailings = await medCorePool.query(`
+    try {
+        // Получаем активные постоянные рассылки, которые не остановлены
+        const mailings = await medCorePool.query(`
             SELECT 
                 pm.id,
                 pm.message_title,
@@ -450,16 +482,16 @@ async function processPermanentReminders(bot) {
                 AND (pm.stopped IS NULL OR pm.stopped = false)
         `);
 
-    if (mailings.rows.length === 0) {
-      console.log('📭 Нет активных постоянных рассылок');
-      return;
-    }
+        if (mailings.rows.length === 0) {
+            console.log('📭 Нет активных постоянных рассылок');
+            return;
+        }
 
-    console.log(`📨 Найдено ${mailings.rows.length} активных постоянных рассылок`);
+        console.log(`📨 Найдено ${mailings.rows.length} активных постоянных рассылок`);
 
-    for (const mailing of mailings.rows) {
-      // Получаем получателей со статусом 'pending' для этой клиники
-      const recipients = await medCorePool.query(`
+        for (const mailing of mailings.rows) {
+            // Получаем получателей со статусом 'pending' для этой клиники
+            const recipients = await medCorePool.query(`
                 SELECT 
                     id,
                     full_name,
@@ -473,26 +505,26 @@ async function processPermanentReminders(bot) {
                     AND clinic_id = $2
             `, [mailing.id, mailing.clinic_id]);
 
-      if (recipients.rows.length === 0) {
-        console.log(`   Нет получателей для рассылки #${mailing.id} (клиника ${mailing.clinic_id})`);
-        continue;
-      }
+            if (recipients.rows.length === 0) {
+                console.log(`   Нет получателей для рассылки #${mailing.id} (клиника ${mailing.clinic_id})`);
+                continue;
+            }
 
-      console.log(`   Рассылка #${mailing.id} (клиника ${mailing.clinic_id}): ${recipients.rows.length} получателей`);
+            console.log(`   Рассылка #${mailing.id} (клиника ${mailing.clinic_id}): ${recipients.rows.length} получателей`);
 
-      let sent = 0;
-      const firstMessage = mailing.message_title
-        ? `*${mailing.message_title}*\n\n${mailing.message_text}`
-        : mailing.message_text;
+            let sent = 0;
+            const firstMessage = mailing.message_title
+                ? `*${mailing.message_title}*\n\n${mailing.message_text}`
+                : mailing.message_text;
 
-      for (const recipient of recipients.rows) {
-        try {
-          await bot.api.sendMessageToUser(recipient.max_id, firstMessage, {
-            parse_mode: 'Markdown',
-            disable_web_page_preview: true
-          });
+            for (const recipient of recipients.rows) {
+                try {
+                    await bot.api.sendMessageToUser(recipient.max_id, firstMessage, {
+                        parse_mode: 'Markdown',
+                        disable_web_page_preview: true
+                    });
 
-          await medCorePool.query(`
+                    await medCorePool.query(`
                         UPDATE permanent_mailing_recipients 
                         SET first_message_sent = true,
                             first_message_sent_at = NOW(),
@@ -500,21 +532,21 @@ async function processPermanentReminders(bot) {
                         WHERE id = $1
                     `, [recipient.id]);
 
-          sent++;
-          console.log(`   ✅ Отправлено ${recipient.full_name} (${recipient.max_id})`);
-          await new Promise(r => setTimeout(r, 100));
+                    sent++;
+                    console.log(`   ✅ Отправлено ${recipient.full_name} (${recipient.max_id})`);
+                    await new Promise(r => setTimeout(r, 100));
 
-        } catch (error) {
-          console.error(`   ❌ Ошибка ${recipient.max_id}:`, error.message);
+                } catch (error) {
+                    console.error(`   ❌ Ошибка ${recipient.max_id}:`, error.message);
+                }
+            }
+
+            console.log(`   Отправлено: ${sent}/${recipients.rows.length}`);
         }
-      }
 
-      console.log(`   Отправлено: ${sent}/${recipients.rows.length}`);
+    } catch (error) {
+        console.error('❌ Ошибка в processPermanentReminders:', error);
     }
-
-  } catch (error) {
-    console.error('❌ Ошибка в processPermanentReminders:', error);
-  }
 }
 
 module.exports = {

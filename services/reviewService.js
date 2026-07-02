@@ -21,8 +21,8 @@ const EXCLUDED_SPECIALTIES = [
 // Проверка, нужно ли пропустить врача
 function shouldSkipDoctor(doctorTitle, doctorSubtitle, doctorTooltip) {
     const textToCheck = `${doctorTitle || ''} ${doctorSubtitle || ''} ${doctorTooltip || ''}`.toLowerCase();
-    
-    return EXCLUDED_SPECIALTIES.some(excluded => 
+
+    return EXCLUDED_SPECIALTIES.some(excluded =>
         textToCheck.includes(excluded.toLowerCase())
     );
 }
@@ -37,7 +37,7 @@ async function savePendingReview(patientId, doctorId, doctorName, appointmentDat
             RETURNING id
         `;
         const result = await medCorePool.query(query, [patientId, doctorId, doctorName, appointmentDate, branchId, chatId]);
-        
+
         if (result.rows.length > 0) {
             logger.info(`Сохранен pending review: patient=${patientId}, doctor=${doctorId}`);
         }
@@ -52,7 +52,7 @@ async function savePendingReview(patientId, doctorId, doctorName, appointmentDat
 async function saveReview(patientId, doctorId, stars, appointmentDate, branchId = null, tgId = null) {
     try {
         console.log(`💾 saveReview: patient=${patientId}, doctor=${doctorId}, stars=${stars}, tgId=${tgId}`);
-        
+
         // Получаем doctor_name из pending_reviews или из врача
         let doctorName = null;
         const pendingResult = await medCorePool.query(
@@ -60,17 +60,17 @@ async function saveReview(patientId, doctorId, stars, appointmentDate, branchId 
              WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3`,
             [patientId, doctorId, appointmentDate]
         );
-        
+
         if (pendingResult.rows.length > 0) {
             doctorName = pendingResult.rows[0].doctor_name;
         }
-        
+
         // Проверяем, существует ли уже отзыв
         const existingResult = await medCorePool.query(
             `SELECT id FROM reviews WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3`,
             [patientId, doctorId, appointmentDate]
         );
-        
+
         let result;
         if (existingResult.rows.length > 0) {
             // Обновляем существующий отзыв
@@ -92,13 +92,13 @@ async function saveReview(patientId, doctorId, stars, appointmentDate, branchId 
                 [patientId, doctorId, doctorName, stars, appointmentDate, branchId, tgId]
             );
         }
-        
+
         // Удаляем из pending_reviews
         await medCorePool.query(
             `DELETE FROM pending_reviews WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3`,
             [patientId, doctorId, appointmentDate]
         );
-        
+
         console.log(`✅ Сохранен review: id=${result.rows[0].id}, tg_id=${tgId}`);
         logger.info(`Сохранен review: patient=${patientId}, doctor=${doctorId}, stars=${stars}, tg_id=${tgId}`);
         return result.rows[0].id;
@@ -113,7 +113,7 @@ async function saveReview(patientId, doctorId, stars, appointmentDate, branchId 
 async function saveReviewText(patientId, doctorId, appointmentDate, reviewText) {
     try {
         console.log(`💾 saveReviewText: patient=${patientId}, doctor=${doctorId}, text="${reviewText}"`);
-        
+
         const query = `
             UPDATE reviews 
             SET review_text = $1, 
@@ -123,7 +123,7 @@ async function saveReviewText(patientId, doctorId, appointmentDate, reviewText) 
             RETURNING id
         `;
         const result = await medCorePool.query(query, [reviewText, patientId, doctorId, appointmentDate]);
-        
+
         if (result.rows.length === 0) {
             console.log(`⚠️ Не найдена запись для обновления: patient=${patientId}, doctor=${doctorId}`);
             // Попробуем найти запись
@@ -133,7 +133,7 @@ async function saveReviewText(patientId, doctorId, appointmentDate, reviewText) 
             );
             console.log(`📊 Найдено записей: ${checkResult.rows.length}`, checkResult.rows[0]);
         }
-        
+
         logger.info(`Сохранен текст отзыва: patient=${patientId}, doctor=${doctorId}`);
         return result.rows[0]?.id;
     } catch (error) {
@@ -197,7 +197,7 @@ async function setWaitingForText(patientId, doctorId, appointmentDate, nextActio
              WHERE patient_id = $2 AND doctor_id = $3 AND appointment_date = $4`,
             [nextAction, patientId, doctorId, appointmentDate]
         );
-        logger.info(`Установлен waiting_for_text: patient=${patientId}, doctor=${doctorId}, nextAction=${nextAction}`);
+        console.log(`✅ Установлен waiting_for_text: patient=${patientId}, doctor=${doctorId}, nextAction=${nextAction}`);
     } catch (error) {
         logger.error(error, { function: 'setWaitingForText', patientId, doctorId });
         throw error;
@@ -222,37 +222,57 @@ async function updateNextAction(patientId, doctorId, appointmentDate, nextAction
 // Получение ожидающего текстового отзыва
 async function getWaitingForText(userId) {
     try {
-        console.log(`🔍 getWaitingForText: поиск для userId=${userId}`);
+        console.log(`🔍 getWaitingForText: поиск для userId=${userId} (тип: ${typeof userId})`);
+
+        // 1. Проверяем, есть ли записи с этим userId вообще
+        const allReviews = await medCorePool.query(
+            `SELECT id, patient_id, doctor_id, max_id, tg_id, waiting_for_text, review_source
+             FROM reviews 
+             WHERE max_id = $1 OR tg_id = $1`,
+            [userId]
+        );
         
-       const result = await medCorePool.query(
-    `SELECT id, patient_id, doctor_id, appointment_date, next_action, waiting_for_text, branch_id
-     FROM reviews 
-     WHERE tg_id = $1 AND waiting_for_text = true
-     LIMIT 1`,
-    [userId]
-);
-        
-        console.log(`📊 Результат: ${result.rows.length} записей`);
-        if (result.rows.length > 0) {
-            console.log(`   ✅ Найден отзыв для patient_id=${result.rows[0].patient_id}`);
+        console.log(`📊 Всего записей для userId=${userId}: ${allReviews.rows.length}`);
+        if (allReviews.rows.length > 0) {
+            allReviews.rows.forEach(r => {
+                console.log(`   - id=${r.id}, max_id=${r.max_id}, tg_id=${r.tg_id}, waiting=${r.waiting_for_text}, source=${r.review_source}`);
+            });
         }
+
+        // 2. Ищем с waiting_for_text = true
+        const result = await medCorePool.query(
+            `SELECT id, patient_id, doctor_id, appointment_date, next_action, waiting_for_text, branch_id
+             FROM reviews 
+             WHERE (max_id = $1 OR tg_id = $1) 
+               AND waiting_for_text = true
+             LIMIT 1`,
+            [userId]
+        );
+
+        console.log(`📊 Найдено записей с waiting_for_text=true: ${result.rows.length}`);
         
+        if (result.rows.length > 0) {
+            console.log(`   ✅ Найден отзыв: patient_id=${result.rows[0].patient_id}, doctor_id=${result.rows[0].doctor_id}`);
+        }
+
         return result.rows[0] || null;
     } catch (error) {
         console.error('❌ Ошибка в getWaitingForText:', error);
         return null;
     }
 }
-
 // Сброс waiting_for_text
 async function clearWaitingForText(patientId, doctorId, appointmentDate) {
     try {
         await medCorePool.query(
             `UPDATE reviews 
-             SET waiting_for_text = false, next_action = NULL
+             SET waiting_for_text = false, 
+                 next_action = NULL,
+                 review_text_received_at = NOW()
              WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3`,
             [patientId, doctorId, appointmentDate]
         );
+        console.log(`✅ Сброшен waiting_for_text: patient=${patientId}, doctor=${doctorId}`);
     } catch (error) {
         logger.error(error, { function: 'clearWaitingForText', patientId, doctorId });
         throw error;

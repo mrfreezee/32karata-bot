@@ -4,6 +4,9 @@ const { pool } = require('../db');
 const { getSchedule, findPatientByName, findPatientByClinicPersonId } = require('../services/scheduleService');
 const { createReminder, updateReminderAck, checkExistingReminder } = require('../services/reminderService');
 
+const API_TOKEN = process.env.API_TOKEN || 'ff66ef3e-0ffb-49b5-a7c7-2b7659ae2a1e';
+const API_SECRET = process.env.API_SECRET || '9e27bda7406bf9f79154dbd8fc5d3a8c';
+
 async function sendReminder(bot, chatId, patient, doctorName, appointmentDate, kind, scheduleId, branchId, clinicPatientId) {
     const date = dayjs(appointmentDate).format('DD.MM.YYYY');
     const hours = String(dayjs(appointmentDate).hour()).padStart(2, '0');
@@ -30,9 +33,7 @@ async function sendReminder(bot, chatId, patient, doctorName, appointmentDate, k
         message = `⏰ Напоминание!\nСегодня у вас приём у врача\n🗓 Дата: ${date}\n👨🏻‍⚕️ Врач: ${doctorName}\n🕒 Время: ${time}${branchAddress}`;
     } else if (kind === '1d') {
         message = `⏰ Напоминание!\nЗавтра у вас приём у врача\n🗓 Дата: ${date}\n👨🏻‍⚕️ Врач: ${doctorName}\n🕒 Время: ${time}${branchAddress}`;
-    } else {
-        message = `📅 Предварительное напоминание\nЧерез 3 дня у вас приём у врача\n🗓 Дата: ${date}\n👨🏻‍⚕️ Врач: ${doctorName}\n🕒 Время: ${time}${branchAddress}`;
-    }
+    } 
 
     const keyboard = Keyboard.inlineKeyboard([
         [Keyboard.button.callback('✅ Подтверждаю', `confirm_reminder_${scheduleId}`)]
@@ -44,17 +45,17 @@ async function sendReminder(bot, chatId, patient, doctorName, appointmentDate, k
         });
         
         await createReminder(
-            chatId,            
-            'max',              
-            scheduleId,          
-            kind,                
+            chatId,                
+            'max',                 
+            scheduleId,           
+            kind,                  
             sentMessage.body.mid, 
-            chatId,              
-            doctorName,          
-            appointmentDate,   
-            time,              
-            branchId,
-            clinicPatientId         
+            chatId,               
+            doctorName,            
+            appointmentDate,      
+            time,                 
+            branchId,             
+            clinicPatientId        
         );
         
         console.log(`📨 Отправлено напоминание (${kind}) пациенту ${patient.full_name}, branchId: ${branchId || 'нет'}`);
@@ -67,7 +68,7 @@ async function checkAndSendReminders(bot) {
     const TEST_USER_ID = '186795504';
     
     const today = dayjs().format('YYYY-MM-DD');
-    const dateEnd = dayjs().add(3, 'days').format('YYYY-MM-DD');
+    const dateEnd = dayjs().add(1, 'days').format('YYYY-MM-DD');
 
     console.log(`\n=== Проверка напоминаний ${today} - ${dateEnd} (тестовый режим: ${TEST_USER_ID}) ===\n`);
 
@@ -143,11 +144,29 @@ async function checkAndSendReminders(bot) {
             } else if (daysDiff === 1) {
                 console.log(`      📨 Отправляем за 1 день`);
                 await sendReminder(bot, messengerId, patient, doctor.title, task.date_start, '1d', task.id, branchID, clinicPersonId);
-            } else if (daysDiff === 3) {
-                console.log(`      📨 Отправляем за 3 дня`);
-                await sendReminder(bot, messengerId, patient, doctor.title, task.date_start, '3d', task.id, branchID, clinicPersonId);
             }
         }
+    }
+}
+
+async function confirmAppointment(recordId) {
+    const url = `https://32karatatlt.dental-pro.online/api/confirmation/record/confirm?token=${API_TOKEN}&secret=${API_SECRET}&id=${recordId}`;
+    
+    try {
+        console.log(`📞 Отправка подтверждения записи ${recordId}...`);
+        const response = await fetch(url, {
+            method: 'GET',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        const data = await response.json();
+        console.log(`✅ Ответ API подтверждения:`, data);
+        return { success: true, data };
+    } catch (error) {
+        console.error(`❌ Ошибка подтверждения записи ${recordId}:`, error.message);
+        return { success: false, error: error.message };
     }
 }
 
@@ -158,23 +177,75 @@ async function handleReminderConfirm(bot) {
 
         console.log(`🔍 Подтверждение напоминания: scheduleId=${scheduleId}, userId=${userId}`);
 
-        // Находим reminder по schedid, а не по id!
-        const reminder = await pool.query(
-            `SELECT id FROM reminders WHERE schedid = $1`,
-            [scheduleId]
-        );
+        try {
+            // Используем существующие колонки
+            const reminder = await pool.query(
+                `SELECT id, schedid, kind, is_active, ack_at
+                 FROM reminders 
+                 WHERE schedid = $1 
+                 ORDER BY sent_at DESC 
+                 LIMIT 1`,
+                [scheduleId]
+            );
 
-        if (reminder.rows.length === 0) {
-            console.log(`❌ Напоминание не найдено для scheduleId ${scheduleId}`);
-            // await ctx.reply('❌ Напоминание не найдено или уже обработано');
-            return;
+            if (reminder.rows.length === 0) {
+                console.log(`❌ Напоминание не найдено для scheduleId ${scheduleId}`);
+                await ctx.reply('❌ Напоминание не найдено или уже обработано');
+                return;
+            }
+
+            const reminderId = reminder.rows[0].id;
+            const reminderKind = reminder.rows[0].kind;
+
+            // Проверяем, не подтверждено ли уже (есть ack_at)
+            if (reminder.rows[0].ack_at) {
+                console.log(`⚠️ Напоминание ${reminderId} уже подтверждено в ${reminder.rows[0].ack_at}`);
+                await ctx.reply('✅ Вы уже подтвердили это напоминание ранее');
+                return;
+            }
+
+            // Если напоминание за 1 день - отправляем запрос в API
+            if (reminderKind === '1d') {
+                console.log(`📞 Отправляем подтверждение в API для записи ${scheduleId}`);
+                
+                const result = await confirmAppointment(scheduleId);
+                
+                if (result.success) {
+                    // Обновляем с использованием существующих колонок ack_at и ack_by
+                    await pool.query(
+                        `UPDATE reminders 
+                         SET ack_at = NOW(), 
+                             ack_by = $2,
+                             is_active = false
+                         WHERE id = $1`,
+                        [reminderId, userId]
+                    );
+                    
+                    console.log(`✅ Подтверждено напоминание reminderId=${reminderId} (запись ${scheduleId} подтверждена в API)`);
+                    await ctx.reply('✅ Спасибо! Ваша запись подтверждена.');
+                } else {
+                    console.error(`❌ Ошибка API для записи ${scheduleId}:`, result.error);
+                    await ctx.reply('❌ Произошла ошибка при подтверждении. Пожалуйста, свяжитесь с клиникой по телефону для подтверждения.');
+                }
+            } else {
+                // Для напоминаний "today" и других - просто подтверждаем
+                await pool.query(
+                    `UPDATE reminders 
+                     SET ack_at = NOW(), 
+                         ack_by = $2,
+                         is_active = false
+                     WHERE id = $1`,
+                    [reminderId, userId]
+                );
+                
+                console.log(`✅ Подтверждено напоминание reminderId=${reminderId} (kind=${reminderKind})`);
+                await ctx.reply('✅ Спасибо! Подтверждение получено.');
+            }
+
+        } catch (error) {
+            console.error('❌ Ошибка в handleReminderConfirm:', error);
+            await ctx.reply('❌ Произошла ошибка. Пожалуйста, попробуйте позже.');
         }
-
-        const reminderId = reminder.rows[0].id;
-        await updateReminderAck(reminderId, userId);
-
-        console.log(`✅ Подтверждено напоминание reminderId=${reminderId}`);
-        await ctx.reply('✅ Спасибо! Подтверждение получено.');
     });
 }
 

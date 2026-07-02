@@ -48,14 +48,12 @@ async function authorizeUser(ctx, userId, userName, startParam, avatarUrl) {
         }
     }
 
-    const isAuthorized = await checkClientExists(userId);
-
-    if (isAuthorized) {
-        await ctx.reply(`👋 С возвращением, ${userName}!\n\nДля использования приложения нажмите кнопку Открыть в левом нижнем углу чата.`);
-        return true;
-    }
-
+    // ⚠️ ВАЖНО: Удаляем старую проверку checkClientExists
+    // Теперь всегда проходим полную регистрацию, даже если пользователь уже есть
+    
+    // Очищаем старый стейт пользователя
     userStates.delete(userId);
+    
     userStates.set(userId, {
         referrerId,
         avatarUrl,
