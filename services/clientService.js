@@ -86,13 +86,17 @@ async function saveClientToDB(userId, clientData, phone, platform = 'max', invit
         : platform === 'max' ? 'max_id'
             : 'vk_id';
 
+    // ✅ Определяем branch_id в зависимости от LOCATION
+    const location = process.env.LOCATION;
+    const branchId = location === 'mosc' ? 50 : null;
+
     console.log('📝 saveClientToDB - параметры:', {
         messengerId, platform, idColumn, phone: cleanPhone,
-        clientName: clientData.display_name, invitedId, avatarUrl, clinicPersonId
+        clientName: clientData.display_name, invitedId, avatarUrl, clinicPersonId,
+        location, branchId
     });
 
     try {
-        // Ищем по clinic_person_id, а не по телефону
         const existingClient = await pool.query(
             `SELECT id, tg_id, max_id, vk_id, full_name, phone, clinic_person_id,
                     data_processing, is_new, location, bonus_balance, invited_id, referral_bonus_granted
@@ -114,7 +118,8 @@ async function saveClientToDB(userId, clientData, phone, platform = 'max', invit
             max_id: client.max_id,
             vk_id: client.vk_id,
             full_name: client.full_name,
-            data_processing: client.data_processing
+            data_processing: client.data_processing,
+            current_branch_id: client.branch_id
         });
 
         // Если ID для этой платформы не заполнен — добавляем
@@ -126,25 +131,39 @@ async function saveClientToDB(userId, clientData, phone, platform = 'max', invit
         // Если ID уже заполнен и совпадает — обновляем данные
         if (client[idColumn] === messengerId) {
             console.log(`✅ ${platform} ID ${messengerId} уже привязан к записи ${client.id}, обновляем данные`);
-            return await updateClientData(client.id, clientData, avatarUrl);
+            
+            // ✅ Обновляем branch_id и location
+            const totalCash = clientData.total_cash || 0;
+            const result = await pool.query(
+                `UPDATE public.client 
+                 SET full_name = COALESCE($1, full_name),
+                     avatar_url = COALESCE($2, avatar_url),
+                     data_processing = true,
+                     branch_id = $4,
+                     location = $5,
+                     total_cash = $6
+                 WHERE id = $3
+                 RETURNING *`,
+                [clientData.display_name || client.full_name, avatarUrl, client.id, branchId, location, totalCash]
+            );
+            return result.rows[0];
         }
 
         // Если ID заполнен, но другим пользователем
         console.warn(`⚠️ Номер ${cleanPhone} уже привязан к ${idColumn}=${client[idColumn]}, а текущий ${idColumn}=${messengerId}`);
 
-        console.warn(`⚠️ Номер ${cleanPhone} уже привязан к ${idColumn}=${client[idColumn]}, а текущий ${idColumn}=${messengerId}`);
-
         const totalCash = clientData.total_cash || 0;
-
         const result = await pool.query(
             `UPDATE public.client 
-     SET full_name = $1,
-         avatar_url = COALESCE($2, avatar_url),
-         data_processing = true,
-         total_cash = $4
-     WHERE id = $3
-     RETURNING *`,
-            [clientData.display_name || client.full_name, avatarUrl, client.id, totalCash]
+             SET full_name = $1,
+                 avatar_url = COALESCE($2, avatar_url),
+                 data_processing = true,
+                 branch_id = $4,
+                 location = $5,
+                 total_cash = $6
+             WHERE id = $3
+             RETURNING *`,
+            [clientData.display_name || client.full_name, avatarUrl, client.id, branchId, location, totalCash]
         );
 
         return result.rows[0];
@@ -155,12 +174,15 @@ async function saveClientToDB(userId, clientData, phone, platform = 'max', invit
     }
 }
 
-
 async function createNewClient(messengerId, idColumn, clientData, phone, invitedId, avatarUrl) {
     const clientCode = await generateUniqueCode();
     const refCode = await generateUniqueCode();
     const clinicPersonId = clientData.id_client ? Number(clientData.id_client) : null;
     const totalCash = clientData.total_cash || 0;
+
+    // ✅ Определяем branch_id в зависимости от LOCATION
+    const location = process.env.LOCATION;
+    const branchId = location === 'mosc' ? 50 : null;
 
     let welcomeBonus = 200;
     try {
@@ -193,8 +215,8 @@ async function createNewClient(messengerId, idColumn, clientData, phone, invited
         refCode,
         welcomeBonus,
         clinicPersonId,
-        null,
-        process.env.LOCATION,
+        branchId,          // ✅ branch_id
+        location,          // ✅ location
         invitedId ? Number(invitedId) : null,
         avatarUrl || null,
         totalCash
@@ -202,7 +224,7 @@ async function createNewClient(messengerId, idColumn, clientData, phone, invited
 
     try {
         const result = await pool.query(query, values);
-        console.log(`✅ Новый клиент создан: ${idColumn}=${messengerId}, phone=${phone}, бонус=${welcomeBonus}, total_cash=${totalCash}`);
+        console.log(`✅ Новый клиент создан: ${idColumn}=${messengerId}, phone=${phone}, branch_id=${branchId}, бонус=${welcomeBonus}, total_cash=${totalCash}`);
         return result.rows[0];
     } catch (error) {
         console.error('❌ Ошибка создания клиента:', error);
@@ -217,6 +239,10 @@ async function updateClientPlatformId(clientId, idColumn, messengerId, clientDat
     try {
         const totalCash = clientData.total_cash || 0;
 
+        // ✅ Определяем branch_id в зависимости от LOCATION
+        const location = process.env.LOCATION;
+        const branchId = location === 'mosc' ? 50 : null;
+
         const result = await pool.query(
             `UPDATE public.client 
              SET ${idColumn} = $1,
@@ -224,13 +250,15 @@ async function updateClientPlatformId(clientId, idColumn, messengerId, clientDat
                  avatar_url = COALESCE($3, avatar_url),
                  data_processing = true,
                  is_new = false,
-                 total_cash = $5
+                 branch_id = $5,
+                 location = $6,
+                 total_cash = $7
              WHERE id = $4
              RETURNING *`,
-            [messengerId, clientData.display_name, avatarUrl, clientId, totalCash]
+            [messengerId, clientData.display_name, avatarUrl, clientId, branchId, location, totalCash]
         );
 
-        console.log(`✅ ${idColumn} ${messengerId} привязан к записи ${clientId}, total_cash=${totalCash}`);
+        console.log(`✅ ${idColumn} ${messengerId} привязан к записи ${clientId}, branch_id=${branchId}, total_cash=${totalCash}`);
         return result.rows[0];
     } catch (error) {
         console.error(`❌ Ошибка привязки ${idColumn}:`, error);
@@ -244,19 +272,25 @@ async function updateClientData(clientId, clientData, avatarUrl) {
     try {
         const totalCash = clientData.total_cash || 0;
 
+        // ✅ Определяем branch_id в зависимости от LOCATION
+        const location = process.env.LOCATION;
+        const branchId = location === 'mosc' ? 50 : null;
+
         const result = await pool.query(
             `UPDATE public.client 
              SET full_name = COALESCE($1, full_name),
                  avatar_url = COALESCE($2, avatar_url),
                  data_processing = true,
                  is_new = false,
-                 total_cash = $4
+                 branch_id = $4,
+                 location = $5,
+                 total_cash = $6
              WHERE id = $3
              RETURNING *`,
-            [clientData.display_name, avatarUrl, clientId, totalCash]
+            [clientData.display_name, avatarUrl, clientId, branchId, location, totalCash]
         );
 
-        console.log(`✅ Данные клиента ${clientId} обновлены, total_cash=${totalCash}`);
+        console.log(`✅ Данные клиента ${clientId} обновлены, branch_id=${branchId}, total_cash=${totalCash}`);
         return result.rows[0];
     } catch (error) {
         console.error('❌ Ошибка обновления данных:', error);
