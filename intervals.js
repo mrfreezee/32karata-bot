@@ -37,10 +37,10 @@ function setupReviewHandlers(bot) {
             console.log(`⭐ Получена оценка ${stars} от MAX пользователя ${userId}`);
             console.log(`   Пациент: ${patientId}, Врач: ${doctorId}, Дата: ${appointmentDate}`);
 
-            // 🔥 ПРОВЕРКА: Есть ли уже отзыв в ЛЮБОЙ платформе
+            // 🔥 ПРОВЕРКА: Есть ли уже отзыв в ЛЮБОЙ платформе (clinic_id = 3)
             const existingReview = await medCorePool.query(
                 `SELECT id, review_source, review_text, stars FROM reviews 
-             WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3`,
+                 WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3 AND clinic_id = 3`,
                 [patientId, doctorId, appointmentDate]
             );
 
@@ -64,10 +64,10 @@ function setupReviewHandlers(bot) {
                     );
                 }
 
-                // Удаляем из pending_reviews
+                // Удаляем из pending_reviews (clinic_id = 3)
                 await medCorePool.query(
                     `DELETE FROM pending_reviews 
-                 WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3`,
+                     WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3 AND clinic_id = 3`,
                     [patientId, doctorId, appointmentDate]
                 );
 
@@ -84,33 +84,33 @@ function setupReviewHandlers(bot) {
             }
 
             // Если отзыва нет - создаем новый
-            // Получаем branch_id и doctor_name из pending_reviews
+            // Получаем branch_id и doctor_name из pending_reviews (clinic_id = 3)
             const pendingResult = await medCorePool.query(
                 `SELECT branch_id, doctor_name FROM pending_reviews 
-             WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3`,
+                 WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3 AND clinic_id = 3`,
                 [patientId, doctorId, appointmentDate]
             );
 
             const branchId = pendingResult.rows[0]?.branch_id || null;
             const doctorName = pendingResult.rows[0]?.doctor_name || '';
 
-            // Создаем новый отзыв с пометкой 'max'
+            // Создаем новый отзыв с пометкой 'max' и clinic_id = 3
             const insertResult = await medCorePool.query(
                 `INSERT INTO reviews (
-                patient_id, doctor_id, doctor_name, stars, appointment_date, 
-                branch_id, max_id, review_source, created_at, waiting_for_text
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'max', NOW(), true)
-            RETURNING id`,
+                    patient_id, doctor_id, doctor_name, stars, appointment_date, 
+                    branch_id, max_id, review_source, created_at, waiting_for_text, clinic_id
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'max', NOW(), true, 3)
+                RETURNING id`,
                 [patientId, doctorId, doctorName, stars, appointmentDate, branchId, userId]
             );
 
             const reviewId = insertResult.rows[0].id;
             console.log(`✅ Создан новый отзыв: id=${reviewId}`);
 
-            // Удаляем из pending_reviews
+            // Удаляем из pending_reviews (clinic_id = 3)
             await medCorePool.query(
                 `DELETE FROM pending_reviews 
-             WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3`,
+                 WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3 AND clinic_id = 3`,
                 [patientId, doctorId, appointmentDate]
             );
 
@@ -293,7 +293,7 @@ function startIntervals(bot) {
                 // Проверяем, есть ли уже отзыв
                 const existingReview = await medCorePool.query(
                     `SELECT id FROM reviews 
-                     WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3`,
+                     WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3 AND clinic_id = 3`,
                     [String(patientID), doctorId, taskDateStart]
                 );
 
@@ -305,7 +305,7 @@ function startIntervals(bot) {
                 // Проверяем pending_reviews - отправляли ли уже в MAX
                 const existingPending = await medCorePool.query(
                     `SELECT id, max_sent FROM pending_reviews 
-                     WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3`,
+                     WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3  AND clinic_id = 3`,
                     [String(patientID), doctorId, taskDateStart]
                 );
 
@@ -328,8 +328,8 @@ function startIntervals(bot) {
                         `INSERT INTO pending_reviews (
                             patient_id, doctor_id, doctor_name, appointment_date, 
                             branch_id, tg_chat_id, max_chat_id, 
-                            tg_sent, max_sent, tg_sent_at, max_sent_at, created_at
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())`,
+                            tg_sent, max_sent, tg_sent_at, max_sent_at, created_at, clinic_id
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), 3)`,
                         [
                             String(patientID), doctorId, doctorFullName, taskDateStart,
                             branchId,

@@ -31,8 +31,8 @@ function shouldSkipDoctor(doctorTitle, doctorSubtitle, doctorTooltip) {
 async function savePendingReview(patientId, doctorId, doctorName, appointmentDate, branchId, chatId) {
     try {
         const query = `
-            INSERT INTO pending_reviews (patient_id, doctor_id, doctor_name, appointment_date, branch_id, chat_id, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, NOW())
+            INSERT INTO pending_reviews (patient_id, doctor_id, doctor_name, appointment_date, branch_id, chat_id, created_at, clinic_id)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW(), 3)
             ON CONFLICT (patient_id, doctor_id, appointment_date) DO NOTHING
             RETURNING id
         `;
@@ -57,7 +57,7 @@ async function saveReview(patientId, doctorId, stars, appointmentDate, branchId 
         let doctorName = null;
         const pendingResult = await medCorePool.query(
             `SELECT doctor_name FROM pending_reviews 
-             WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3`,
+             WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3 AND clinic_id = 3`,
             [patientId, doctorId, appointmentDate]
         );
 
@@ -65,9 +65,9 @@ async function saveReview(patientId, doctorId, stars, appointmentDate, branchId 
             doctorName = pendingResult.rows[0].doctor_name;
         }
 
-        // Проверяем, существует ли уже отзыв
+        // Проверяем, существует ли уже отзыв (clinic_id = 3)
         const existingResult = await medCorePool.query(
-            `SELECT id FROM reviews WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3`,
+            `SELECT id FROM reviews WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3 AND clinic_id = 3`,
             [patientId, doctorId, appointmentDate]
         );
 
@@ -79,23 +79,23 @@ async function saveReview(patientId, doctorId, stars, appointmentDate, branchId 
                  SET stars = $1, 
                      updated_at = NOW(),
                      tg_id = COALESCE($2, tg_id)
-                 WHERE patient_id = $3 AND doctor_id = $4 AND appointment_date = $5
+                 WHERE patient_id = $3 AND doctor_id = $4 AND appointment_date = $5 AND clinic_id = 3
                  RETURNING id`,
                 [stars, tgId, patientId, doctorId, appointmentDate]
             );
         } else {
-            // Вставляем новый отзыв с tg_id
+            // Вставляем новый отзыв с tg_id и clinic_id = 3
             result = await medCorePool.query(
-                `INSERT INTO reviews (patient_id, doctor_id, doctor_name, stars, appointment_date, branch_id, tg_id, created_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+                `INSERT INTO reviews (patient_id, doctor_id, doctor_name, stars, appointment_date, branch_id, tg_id, created_at, clinic_id)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), 3)
                  RETURNING id`,
                 [patientId, doctorId, doctorName, stars, appointmentDate, branchId, tgId]
             );
         }
 
-        // Удаляем из pending_reviews
+        // Удаляем из pending_reviews (clinic_id = 3)
         await medCorePool.query(
-            `DELETE FROM pending_reviews WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3`,
+            `DELETE FROM pending_reviews WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3 AND clinic_id = 3`,
             [patientId, doctorId, appointmentDate]
         );
 
@@ -119,7 +119,7 @@ async function saveReviewText(patientId, doctorId, appointmentDate, reviewText) 
             SET review_text = $1, 
                 review_text_received_at = NOW(),
                 waiting_for_text = false
-            WHERE patient_id = $2 AND doctor_id = $3 AND appointment_date = $4
+            WHERE patient_id = $2 AND doctor_id = $3 AND appointment_date = $4 AND clinic_id = 3
             RETURNING id
         `;
         const result = await medCorePool.query(query, [reviewText, patientId, doctorId, appointmentDate]);
@@ -128,7 +128,7 @@ async function saveReviewText(patientId, doctorId, appointmentDate, reviewText) 
             console.log(`⚠️ Не найдена запись для обновления: patient=${patientId}, doctor=${doctorId}`);
             // Попробуем найти запись
             const checkResult = await medCorePool.query(
-                `SELECT id, waiting_for_text FROM reviews WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3`,
+                `SELECT id, waiting_for_text FROM reviews WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3 AND clinic_id = 3`,
                 [patientId, doctorId, appointmentDate]
             );
             console.log(`📊 Найдено записей: ${checkResult.rows.length}`, checkResult.rows[0]);
@@ -147,7 +147,7 @@ async function saveReviewText(patientId, doctorId, appointmentDate, reviewText) 
 async function getPatientReviewsCount(patientId) {
     try {
         const result = await medCorePool.query(
-            `SELECT COUNT(*) as count FROM reviews WHERE patient_id = $1`,
+            `SELECT COUNT(*) as count FROM reviews WHERE patient_id = $1 AND clinic_id = 3`,
             [patientId]
         );
         return parseInt(result.rows[0].count);
@@ -162,7 +162,7 @@ async function getPendingReview(patientId, doctorId, appointmentDate) {
     try {
         const result = await medCorePool.query(
             `SELECT * FROM pending_reviews 
-             WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3`,
+             WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3 AND clinic_id = 3`,
             [patientId, doctorId, appointmentDate]
         );
         return result.rows[0] || null;
@@ -176,7 +176,7 @@ async function getPendingReview(patientId, doctorId, appointmentDate) {
 async function reviewExists(patientId, doctorId, appointmentDate) {
     try {
         const result = await medCorePool.query(
-            `SELECT id FROM reviews WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3`,
+            `SELECT id FROM reviews WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3 AND clinic_id = 3`,
             [patientId, doctorId, appointmentDate]
         );
         return result.rows.length > 0;
@@ -194,7 +194,7 @@ async function setWaitingForText(patientId, doctorId, appointmentDate, nextActio
              SET waiting_for_text = true, 
                  next_action = $1,
                  waiting_for_text_started_at = NOW()
-             WHERE patient_id = $2 AND doctor_id = $3 AND appointment_date = $4`,
+             WHERE patient_id = $2 AND doctor_id = $3 AND appointment_date = $4 AND clinic_id = 3`,
             [nextAction, patientId, doctorId, appointmentDate]
         );
         console.log(`✅ Установлен waiting_for_text: patient=${patientId}, doctor=${doctorId}, nextAction=${nextAction}`);
@@ -210,7 +210,7 @@ async function updateNextAction(patientId, doctorId, appointmentDate, nextAction
         await medCorePool.query(
             `UPDATE reviews 
              SET next_action = $1
-             WHERE patient_id = $2 AND doctor_id = $3 AND appointment_date = $4`,
+             WHERE patient_id = $2 AND doctor_id = $3 AND appointment_date = $4 AND clinic_id = 3`,
             [nextAction, patientId, doctorId, appointmentDate]
         );
     } catch (error) {
@@ -224,11 +224,11 @@ async function getWaitingForText(userId) {
     try {
         console.log(`🔍 getWaitingForText: поиск для userId=${userId} (тип: ${typeof userId})`);
 
-        // 1. Проверяем, есть ли записи с этим userId вообще
+        // 1. Проверяем, есть ли записи с этим userId вообще (clinic_id = 3)
         const allReviews = await medCorePool.query(
             `SELECT id, patient_id, doctor_id, max_id, tg_id, waiting_for_text, review_source
              FROM reviews 
-             WHERE max_id = $1 OR tg_id = $1`,
+             WHERE (max_id = $1 OR tg_id = $1) AND clinic_id = 3`,
             [userId]
         );
         
@@ -239,12 +239,13 @@ async function getWaitingForText(userId) {
             });
         }
 
-        // 2. Ищем с waiting_for_text = true
+        // 2. Ищем с waiting_for_text = true (clinic_id = 3)
         const result = await medCorePool.query(
             `SELECT id, patient_id, doctor_id, appointment_date, next_action, waiting_for_text, branch_id
              FROM reviews 
              WHERE (max_id = $1 OR tg_id = $1) 
                AND waiting_for_text = true
+               AND clinic_id = 3
              LIMIT 1`,
             [userId]
         );
@@ -261,6 +262,7 @@ async function getWaitingForText(userId) {
         return null;
     }
 }
+
 // Сброс waiting_for_text
 async function clearWaitingForText(patientId, doctorId, appointmentDate) {
     try {
@@ -269,7 +271,7 @@ async function clearWaitingForText(patientId, doctorId, appointmentDate) {
              SET waiting_for_text = false, 
                  next_action = NULL,
                  review_text_received_at = NOW()
-             WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3`,
+             WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3 AND clinic_id = 3`,
             [patientId, doctorId, appointmentDate]
         );
         console.log(`✅ Сброшен waiting_for_text: patient=${patientId}, doctor=${doctorId}`);
