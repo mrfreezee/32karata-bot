@@ -7,6 +7,36 @@ const { createReminder, updateReminderAck, checkExistingReminder } = require('..
 const API_TOKEN = process.env.API_TOKEN || 'ff66ef3e-0ffb-49b5-a7c7-2b7659ae2a1e';
 const API_SECRET = process.env.API_SECRET || '9e27bda7406bf9f79154dbd8fc5d3a8c';
 
+let messageQueue = [];
+let isProcessing = false;
+const MAX_MESSAGES_PER_SECOND = 25;
+const MESSAGE_INTERVAL = 1000 / MAX_MESSAGES_PER_SECOND;
+
+async function processQueue() {
+    if (isProcessing || messageQueue.length === 0) return;
+    isProcessing = true;
+
+    while (messageQueue.length > 0) {
+        const { bot, chatId, message, options, resolve, reject } = messageQueue.shift();
+        try {
+            const result = await bot.api.sendMessageToUser(chatId, message, options);
+            resolve(result);
+        } catch (error) {
+            reject(error);
+        }
+        await new Promise(resolve => setTimeout(resolve, MESSAGE_INTERVAL));
+    }
+
+    isProcessing = false;
+}
+
+function sendMessageWithQueue(bot, chatId, message, options = {}) {
+    return new Promise((resolve, reject) => {
+        messageQueue.push({ bot, chatId, message, options, resolve, reject });
+        processQueue();
+    });
+}
+
 async function sendReminder(bot, chatId, patient, doctorName, appointmentDate, kind, scheduleId, branchId, clinicPatientId) {
     const date = dayjs(appointmentDate).format('DD.MM.YYYY');
     const hours = String(dayjs(appointmentDate).hour()).padStart(2, '0');
@@ -33,29 +63,29 @@ async function sendReminder(bot, chatId, patient, doctorName, appointmentDate, k
         message = `⏰ Напоминание!\nСегодня у вас приём у врача\n🗓 Дата: ${date}\n👨🏻‍⚕️ Врач: ${doctorName}\n🕒 Время: ${time}${branchAddress}`;
     } else if (kind === '1d') {
         message = `⏰ Напоминание!\nЗавтра у вас приём у врача\n🗓 Дата: ${date}\n👨🏻‍⚕️ Врач: ${doctorName}\n🕒 Время: ${time}${branchAddress}`;
-    } 
+    }
 
     const keyboard = Keyboard.inlineKeyboard([
         [Keyboard.button.callback('✅ Подтверждаю', `confirm_reminder_${scheduleId}`)]
     ]);
 
     try {
-        const sentMessage = await bot.api.sendMessageToUser(chatId, message, {
+        const sentMessage = await sendMessageWithQueue(bot, chatId, message, {
             attachments: [keyboard]
         });
         
         await createReminder(
-            chatId,                
-            'max',                 
-            scheduleId,           
-            kind,                  
-            sentMessage.body.mid, 
-            chatId,               
-            doctorName,            
-            appointmentDate,      
-            time,                 
-            branchId,             
-            clinicPatientId        
+            chatId,
+            'max',
+            scheduleId,
+            kind,
+            sentMessage.body.mid,
+            chatId,
+            doctorName,
+            appointmentDate,
+            time,
+            branchId,
+            clinicPatientId
         );
         
         console.log(`📨 Отправлено напоминание (${kind}) пациенту ${patient.full_name}, branchId: ${branchId || 'нет'}`);
@@ -92,12 +122,9 @@ async function checkAndSendReminders(bot) {
         for (const task of doctor.tasks || []) {
             if (task.title === 'Резерв' || task.title.includes('Медсестра')) continue;
 
-
-
             const exists = await checkExistingReminder(task.id);
             if (exists) continue;
 
-            // Ищем пациента по patientID (clinic_person_id)
             const clinicPersonId = task.patientID;
             if (!clinicPersonId) {
                 continue;
@@ -109,7 +136,6 @@ async function checkAndSendReminders(bot) {
                 continue;
             }
 
-            // Берём первого подходящего пациента с messengerId
             let patient = null;
             let messengerId = null;
             
@@ -178,7 +204,6 @@ async function handleReminderConfirm(bot) {
         console.log(`🔍 Подтверждение напоминания: scheduleId=${scheduleId}, userId=${userId}`);
 
         try {
-            // Используем существующие колонки
             const reminder = await pool.query(
                 `SELECT id, schedid, kind, is_active, ack_at
                  FROM reminders 
@@ -190,28 +215,25 @@ async function handleReminderConfirm(bot) {
 
             if (reminder.rows.length === 0) {
                 console.log(`❌ Напоминание не найдено для scheduleId ${scheduleId}`);
-                await ctx.reply('❌ Напоминание не найдено или уже обработано');
+                await sendMessageWithQueue(bot, userId, '❌ Напоминание не найдено или уже обработано');
                 return;
             }
 
             const reminderId = reminder.rows[0].id;
             const reminderKind = reminder.rows[0].kind;
 
-            // Проверяем, не подтверждено ли уже (есть ack_at)
             if (reminder.rows[0].ack_at) {
                 console.log(`⚠️ Напоминание ${reminderId} уже подтверждено в ${reminder.rows[0].ack_at}`);
-                await ctx.reply('✅ Вы уже подтвердили это напоминание ранее');
+                await sendMessageWithQueue(bot, userId, '✅ Вы уже подтвердили это напоминание ранее');
                 return;
             }
 
-            // Если напоминание за 1 день - отправляем запрос в API
             if (reminderKind === '1d') {
                 console.log(`📞 Отправляем подтверждение в API для записи ${scheduleId}`);
                 
                 const result = await confirmAppointment(scheduleId);
                 
                 if (result.success) {
-                    // Обновляем с использованием существующих колонок ack_at и ack_by
                     await pool.query(
                         `UPDATE reminders 
                          SET ack_at = NOW(), 
@@ -222,13 +244,12 @@ async function handleReminderConfirm(bot) {
                     );
                     
                     console.log(`✅ Подтверждено напоминание reminderId=${reminderId} (запись ${scheduleId} подтверждена в API)`);
-                    await ctx.reply('✅ Спасибо! Ваша запись подтверждена.');
+                    await sendMessageWithQueue(bot, userId, '✅ Спасибо! Ваша запись подтверждена.');
                 } else {
                     console.error(`❌ Ошибка API для записи ${scheduleId}:`, result.error);
-                    await ctx.reply('❌ Произошла ошибка при подтверждении. Пожалуйста, свяжитесь с клиникой по телефону для подтверждения.');
+                    await sendMessageWithQueue(bot, userId, '❌ Произошла ошибка при подтверждении. Пожалуйста, свяжитесь с клиникой по телефону для подтверждения.');
                 }
             } else {
-                // Для напоминаний "today" и других - просто подтверждаем
                 await pool.query(
                     `UPDATE reminders 
                      SET ack_at = NOW(), 
@@ -239,12 +260,12 @@ async function handleReminderConfirm(bot) {
                 );
                 
                 console.log(`✅ Подтверждено напоминание reminderId=${reminderId} (kind=${reminderKind})`);
-                await ctx.reply('✅ Спасибо! Подтверждение получено.');
+                await sendMessageWithQueue(bot, userId, '✅ Спасибо! Подтверждение получено.');
             }
 
         } catch (error) {
             console.error('❌ Ошибка в handleReminderConfirm:', error);
-            await ctx.reply('❌ Произошла ошибка. Пожалуйста, попробуйте позже.');
+            await sendMessageWithQueue(bot, userId, '❌ Произошла ошибка. Пожалуйста, попробуйте позже.');
         }
     });
 }

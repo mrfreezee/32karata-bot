@@ -581,6 +581,15 @@ setTimeout(checkBirthdays, 30000);
 
         console.log(`⏰ Проверка напоминаний (MAX): раз в сутки в 09:00 (следующая через ${Math.floor(delay / 1000 / 60)} мин)`);
     };
+
+//     const scheduleDailyCheck = () => {
+//     if (reminderTimeout) clearInterval(reminderTimeout);
+//     reminderTimeout = setInterval(() => {
+//         checkAndSendReminders(bot).catch(console.error);
+//     }, 60000);
+//     console.log(`⏰ Проверка напоминаний: каждую минуту`);
+// };
+
     scheduleDailyCheck();
 
     // === Непрочитанные сообщения ===

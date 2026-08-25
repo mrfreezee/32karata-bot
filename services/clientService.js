@@ -11,36 +11,28 @@ const API_CLIENT_URL = process.env.API_CLIENT_URL;
 async function getClientByPhone(phone) {
     const cleanPhone = cleanPhoneNumber(phone);
     
-    // 🔥 Ищем оба варианта: и с 7, и с 8
     const phoneVariants = [];
     
-    // Вариант с 7 (международный формат)
     if (cleanPhone.startsWith('7')) {
         phoneVariants.push(cleanPhone);
-        // Добавляем вариант с 8
         phoneVariants.push('8' + cleanPhone.slice(1));
     } 
-    // Вариант с 8 (российский формат)
     else if (cleanPhone.startsWith('8')) {
         phoneVariants.push(cleanPhone);
-        // Добавляем вариант с 7
         phoneVariants.push('7' + cleanPhone.slice(1));
     } 
     else if (cleanPhone.length === 10 && cleanPhone.startsWith('9')) {
         phoneVariants.push('7' + cleanPhone);
         phoneVariants.push('8' + cleanPhone);
     } 
-    // Если номер уже нормализован
     else {
         phoneVariants.push(cleanPhone);
     }
 
-    // Убираем дубликаты
     const uniqueVariants = [...new Set(phoneVariants)];
     
     console.log(`📱 Поиск по номерам:`, uniqueVariants);
 
-    // Пробуем найти пациента по каждому варианту
     for (const variant of uniqueVariants) {
         const url = `${API_CLIENT_URL}/api/client_by_phone?token=${API_TOKEN}&secret=${API_SECRET}&phone=${variant}`;
         
@@ -60,6 +52,8 @@ async function getClientByPhone(phone) {
                             const detailData = await detailResponse.json();
                             if (detailData.data) {
                                 client.total_cash = Math.round(detailData.data.total_cash || 0);
+                                // ✅ Добавляем date_of_first_appointment
+                                client.date_of_first_appointment = detailData.data.date_of_first_appointment || null;
                             }
                         } catch (e) { }
                     }
@@ -180,29 +174,37 @@ async function createNewClient(messengerId, idColumn, clientData, phone, invited
     const clinicPersonId = clientData.id_client ? Number(clientData.id_client) : null;
     const totalCash = clientData.total_cash || 0;
 
-    // ✅ Определяем branch_id в зависимости от LOCATION
+    const isPrimary = !clientData.date_of_first_appointment;
+
+    const finalInvitedId = (isPrimary && invitedId) ? Number(invitedId) : null;
+
     const location = process.env.LOCATION;
     const branchId = location === 'mosc' ? 50 : null;
 
-    let welcomeBonus = 200;
-    try {
-        const bonusSettings = await medCorePool.query(
-            `SELECT welcome_bonus FROM referral_settings WHERE clinic_id = 3 AND is_active = true LIMIT 1`
-        );
-        if (bonusSettings.rows.length > 0 && bonusSettings.rows[0].welcome_bonus) {
-            welcomeBonus = bonusSettings.rows[0].welcome_bonus;
-            console.log(`🎁 Welcome bonus from settings: ${welcomeBonus}`);
+    let welcomeBonus = 0;
+    if (isPrimary) {
+        try {
+            const bonusSettings = await medCorePool.query(
+                `SELECT welcome_bonus FROM referral_settings WHERE clinic_id = 3 AND is_active = true LIMIT 1`
+            );
+            if (bonusSettings.rows.length > 0 && bonusSettings.rows[0].welcome_bonus) {
+                welcomeBonus = bonusSettings.rows[0].welcome_bonus;
+                console.log(`🎁 Welcome bonus from settings: ${welcomeBonus}`);
+            }
+        } catch (error) {
+            console.error('❌ Ошибка получения welcome_bonus:', error.message);
         }
-    } catch (error) {
-        console.error('❌ Ошибка получения welcome_bonus:', error.message);
+    } else {
+        console.log(`ℹ️ Пациент не первичный (date_of_first_appointment не null), welcome bonus не начисляется, invited_id игнорируется`);
     }
 
     const query = `
         INSERT INTO public.client (
             ${idColumn}, full_name, phone, birth_date, reg_date, role, 
             client_code, ref_code, is_new, bonus_balance, clinic_person_id, 
-            data_processing, branch_id, location, invited_id, invitation_date, avatar_url, total_cash
-        ) VALUES ($1, $2, $3, $4, NOW(), 'patient', $5, $6, true, $7, $8, true, $9, $10, $11, NOW(), $12, $13)
+            data_processing, branch_id, location, invited_id, invitation_date, avatar_url, total_cash,
+            is_primary
+        ) VALUES ($1, $2, $3, $4, NOW(), 'patient', $5, $6, true, $7, $8, true, $9, $10, $11, NOW(), $12, $13, $14)
         RETURNING *;
     `;
 
@@ -215,16 +217,17 @@ async function createNewClient(messengerId, idColumn, clientData, phone, invited
         refCode,
         welcomeBonus,
         clinicPersonId,
-        branchId,          // ✅ branch_id
-        location,          // ✅ location
-        invitedId ? Number(invitedId) : null,
+        branchId,
+        location,
+        finalInvitedId,  // ✅ Если не первичный - будет null
         avatarUrl || null,
-        totalCash
+        totalCash,
+        isPrimary
     ];
 
     try {
         const result = await pool.query(query, values);
-        console.log(`✅ Новый клиент создан: ${idColumn}=${messengerId}, phone=${phone}, branch_id=${branchId}, бонус=${welcomeBonus}, total_cash=${totalCash}`);
+        console.log(`✅ Новый клиент создан: ${idColumn}=${messengerId}, phone=${phone}, branch_id=${branchId}, бонус=${welcomeBonus}, total_cash=${totalCash}, is_primary=${isPrimary}, invited_id=${finalInvitedId || 'нет'}`);
         return result.rows[0];
     } catch (error) {
         console.error('❌ Ошибка создания клиента:', error);
