@@ -207,212 +207,212 @@ function startIntervals(bot) {
 
     // === Проверка завершенных приемов ===
     const checkCompletedAppointments = async () => {
-    console.log('🔍 Проверка завершенных приемов для запроса отзывов (MAX)...');
+        console.log('🔍 Проверка завершенных приемов для запроса отзывов (MAX)...');
 
-    try {
-        const today = dayjs().format('YYYY-MM-DD');
-        const url = `${API_CLIENT_URL}/api/mobile/schedule?token=${API_TOKEN}&secret=${API_SECRET}&date_start=${today}&date_end=${today}`;
+        try {
+            const today = dayjs().format('YYYY-MM-DD');
+            const url = `${API_CLIENT_URL}/api/mobile/schedule?token=${API_TOKEN}&secret=${API_SECRET}&date_start=${today}&date_end=${today}`;
 
-        const response = await fetch(url);
-        if (!response.ok) {
-            console.log(`❌ Ошибка API: ${response.status}`);
-            return;
-        }
-
-        const result = await response.json();
-        const data = result?.data;
-        if (!data || !Array.isArray(data)) {
-            console.log('❌ Нет данных о расписании или неверный формат');
-            return;
-        }
-
-        let sentCount = 0;
-
-        for (const doctor of data) {
-            if (shouldSkipDoctor(doctor.title, doctor.subtitle, doctor.tooltip)) {
-                continue;
+            const response = await fetch(url);
+            if (!response.ok) {
+                console.log(`❌ Ошибка API: ${response.status}`);
+                return;
             }
 
-            const doctorId = doctor.id;
-            const doctorFullName = doctor.tooltip || doctor.title;
-
-            let branchId = null;
-            const blocks = doctor.blocks || [];
-            const infoBlock = blocks.find(block => block.type === 'info');
-
-            if (infoBlock && infoBlock.branchID) {
-                branchId = infoBlock.branchID;
-            } else {
-                branchId = LOCATION === 'mosc' ? 50 : 3;
+            const result = await response.json();
+            const data = result?.data;
+            if (!data || !Array.isArray(data)) {
+                console.log('❌ Нет данных о расписании или неверный формат');
+                return;
             }
 
-            const tasks = doctor.tasks || [];
+            let sentCount = 0;
 
-            for (const task of tasks) {
-                const patientID = task.patientID;
-                const taskDateStart = task.date_start;
-                const taskDateEnd = task.date_end;
-
-                if (!patientID) continue;
-
-                const endTime = dayjs(taskDateEnd);
-                const now = dayjs();
-                const minutesSinceEnd = now.diff(endTime, 'minute');
-
-                if (endTime.isAfter(now)) continue;
-                if (minutesSinceEnd < 30) continue;
-
-                const reviewKey = `${patientID}_${doctorId}_${taskDateStart}`;
-
-                const nowTime = Date.now();
-                for (const [key, time] of sentReviews.entries()) {
-                    if (nowTime - time > 24 * 60 * 60 * 1000) {
-                        sentReviews.delete(key);
-                    }
+            for (const doctor of data) {
+                if (shouldSkipDoctor(doctor.title, doctor.subtitle, doctor.tooltip)) {
+                    continue;
                 }
 
-                if (sentReviews.has(reviewKey)) continue;
+                const doctorId = doctor.id;
+                const doctorFullName = doctor.tooltip || doctor.title;
 
-                // Ищем клиента с max_id
-                const clientResult = await pool.query(
-                    `SELECT id, max_id, tg_id, full_name, phone, clinic_person_id
+                let branchId = null;
+                const blocks = doctor.blocks || [];
+                const infoBlock = blocks.find(block => block.type === 'info');
+
+                if (infoBlock && infoBlock.branchID) {
+                    branchId = infoBlock.branchID;
+                } else {
+                    branchId = LOCATION === 'mosc' ? 50 : 3;
+                }
+
+                const tasks = doctor.tasks || [];
+
+                for (const task of tasks) {
+                    const patientID = task.patientID;
+                    const taskDateStart = task.date_start;
+                    const taskDateEnd = task.date_end;
+
+                    if (!patientID) continue;
+
+                    const endTime = dayjs(taskDateEnd);
+                    const now = dayjs();
+                    const minutesSinceEnd = now.diff(endTime, 'minute');
+
+                    if (endTime.isAfter(now)) continue;
+                    if (minutesSinceEnd < 30) continue;
+
+                    const reviewKey = `${patientID}_${doctorId}_${taskDateStart}`;
+
+                    const nowTime = Date.now();
+                    for (const [key, time] of sentReviews.entries()) {
+                        if (nowTime - time > 24 * 60 * 60 * 1000) {
+                            sentReviews.delete(key);
+                        }
+                    }
+
+                    if (sentReviews.has(reviewKey)) continue;
+
+                    // Ищем клиента с max_id
+                    const clientResult = await pool.query(
+                        `SELECT id, max_id, tg_id, full_name, phone, clinic_person_id
                      FROM client 
                      WHERE clinic_person_id = $1 AND location = $2 AND max_id IS NOT NULL`,
-                    [String(patientID), LOCATION]
-                );
+                        [String(patientID), LOCATION]
+                    );
 
-                if (!clientResult.rows.length) {
-                    continue;
-                }
+                    if (!clientResult.rows.length) {
+                        continue;
+                    }
 
-                const client = clientResult.rows[0];
-                const maxChatId = client.max_id;
+                    const client = clientResult.rows[0];
+                    const maxChatId = client.max_id;
 
-                if (!maxChatId) continue;
+                    if (!maxChatId) continue;
 
-                // Проверяем, есть ли уже отзыв
-                const existingReview = await medCorePool.query(
-                    `SELECT id FROM reviews 
+                    // Проверяем, есть ли уже отзыв
+                    const existingReview = await medCorePool.query(
+                        `SELECT id FROM reviews 
                      WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3 AND clinic_id = 3`,
-                    [String(patientID), doctorId, taskDateStart]
-                );
+                        [String(patientID), doctorId, taskDateStart]
+                    );
 
-                if (existingReview.rows.length) {
-                    sentReviews.set(reviewKey, Date.now());
-                    continue;
-                }
+                    if (existingReview.rows.length) {
+                        sentReviews.set(reviewKey, Date.now());
+                        continue;
+                    }
 
-                // Проверяем pending_reviews - отправляли ли уже в MAX
-                const existingPending = await medCorePool.query(
-                    `SELECT id, max_sent FROM pending_reviews 
+                    // Проверяем pending_reviews - отправляли ли уже в MAX
+                    const existingPending = await medCorePool.query(
+                        `SELECT id, max_sent FROM pending_reviews 
                      WHERE patient_id = $1 AND doctor_id = $2 AND appointment_date = $3  AND clinic_id = 3`,
-                    [String(patientID), doctorId, taskDateStart]
-                );
+                        [String(patientID), doctorId, taskDateStart]
+                    );
 
-                let needSend = false;
+                    let needSend = false;
 
-                if (existingPending.rows.length > 0) {
-                    if (!existingPending.rows[0].max_sent) {
-                        needSend = true;
-                        await medCorePool.query(
-                            `UPDATE pending_reviews 
+                    if (existingPending.rows.length > 0) {
+                        if (!existingPending.rows[0].max_sent) {
+                            needSend = true;
+                            await medCorePool.query(
+                                `UPDATE pending_reviews 
                              SET max_sent = true, 
                                  max_sent_at = NOW(), 
                                  max_chat_id = $1
                              WHERE id = $2`,
-                            [maxChatId, existingPending.rows[0].id]
-                        );
-                    }
-                } else {
-                    await medCorePool.query(
-                        `INSERT INTO pending_reviews (
+                                [maxChatId, existingPending.rows[0].id]
+                            );
+                        }
+                    } else {
+                        await medCorePool.query(
+                            `INSERT INTO pending_reviews (
                             patient_id, doctor_id, doctor_name, appointment_date, 
                             branch_id, tg_chat_id, max_chat_id, 
                             tg_sent, max_sent, tg_sent_at, max_sent_at, created_at, clinic_id
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), 3)`,
-                        [
-                            String(patientID), doctorId, doctorFullName, taskDateStart,
-                            branchId,
-                            null,
-                            maxChatId,
-                            false,
-                            true,
-                            null,
-                            new Date()
-                        ]
-                    );
-                    needSend = true;
-                }
+                            [
+                                String(patientID), doctorId, doctorFullName, taskDateStart,
+                                branchId,
+                                null,
+                                maxChatId,
+                                false,
+                                true,
+                                null,
+                                new Date()
+                            ]
+                        );
+                        needSend = true;
+                    }
 
-                if (!needSend) {
-                    sentReviews.set(reviewKey, Date.now());
-                    continue;
-                }
+                    if (!needSend) {
+                        sentReviews.set(reviewKey, Date.now());
+                        continue;
+                    }
 
-                const appointmentDate = dayjs(taskDateStart).format('DD.MM.YYYY');
-                const appointmentTime = dayjs(taskDateStart).format('HH:mm');
+                    const appointmentDate = dayjs(taskDateStart).format('DD.MM.YYYY');
+                    const appointmentTime = dayjs(taskDateStart).format('HH:mm');
 
-                // Клавиатура для MAX
-                const keyboard = {
-                    attachments: [
-                        {
-                            type: "inline_keyboard",
-                            payload: {
-                                buttons: [
-                                    [
-                                        { type: "callback", text: "1️⃣", payload: `review_1_${patientID}_${doctorId}_${taskDateStart}` },
-                                        { type: "callback", text: "2️⃣", payload: `review_2_${patientID}_${doctorId}_${taskDateStart}` },
-                                        { type: "callback", text: "3️⃣", payload: `review_3_${patientID}_${doctorId}_${taskDateStart}` },
-                                        { type: "callback", text: "4️⃣", payload: `review_4_${patientID}_${doctorId}_${taskDateStart}` },
-                                        { type: "callback", text: "5️⃣", payload: `review_5_${patientID}_${doctorId}_${taskDateStart}` }
-                                    ],
-                                    [
-                                        { type: "callback", text: "6️⃣", payload: `review_6_${patientID}_${doctorId}_${taskDateStart}` },
-                                        { type: "callback", text: "7️⃣", payload: `review_7_${patientID}_${doctorId}_${taskDateStart}` },
-                                        { type: "callback", text: "8️⃣", payload: `review_8_${patientID}_${doctorId}_${taskDateStart}` },
-                                        { type: "callback", text: "9️⃣", payload: `review_9_${patientID}_${doctorId}_${taskDateStart}` },
-                                        { type: "callback", text: "🔟", payload: `review_10_${patientID}_${doctorId}_${taskDateStart}` }
+                    // Клавиатура для MAX
+                    const keyboard = {
+                        attachments: [
+                            {
+                                type: "inline_keyboard",
+                                payload: {
+                                    buttons: [
+                                        [
+                                            { type: "callback", text: "1️⃣", payload: `review_1_${patientID}_${doctorId}_${taskDateStart}` },
+                                            { type: "callback", text: "2️⃣", payload: `review_2_${patientID}_${doctorId}_${taskDateStart}` },
+                                            { type: "callback", text: "3️⃣", payload: `review_3_${patientID}_${doctorId}_${taskDateStart}` },
+                                            { type: "callback", text: "4️⃣", payload: `review_4_${patientID}_${doctorId}_${taskDateStart}` },
+                                            { type: "callback", text: "5️⃣", payload: `review_5_${patientID}_${doctorId}_${taskDateStart}` }
+                                        ],
+                                        [
+                                            { type: "callback", text: "6️⃣", payload: `review_6_${patientID}_${doctorId}_${taskDateStart}` },
+                                            { type: "callback", text: "7️⃣", payload: `review_7_${patientID}_${doctorId}_${taskDateStart}` },
+                                            { type: "callback", text: "8️⃣", payload: `review_8_${patientID}_${doctorId}_${taskDateStart}` },
+                                            { type: "callback", text: "9️⃣", payload: `review_9_${patientID}_${doctorId}_${taskDateStart}` },
+                                            { type: "callback", text: "🔟", payload: `review_10_${patientID}_${doctorId}_${taskDateStart}` }
+                                        ]
                                     ]
-                                ]
+                                }
                             }
-                        }
-                    ]
-                };
+                        ]
+                    };
 
-                await bot.api.sendMessageToUser(
-                    maxChatId,
-                    `🦷 Уважаемый(ая) ${client.full_name || 'клиент'}!\n\n` +
-                    `Пожалуйста, оцените ваш визит к врачу ${doctorFullName}\n` +
-                    `📅 Дата: ${appointmentDate}\n` +
-                    `🕐 Время: ${appointmentTime}\n\n` +
-                    `Оцените прием по шкале от 1 до 10:\n` +
-                    `1️⃣ - ужасно, 1️⃣0️⃣ - превосходно`,
-                    keyboard
-                );
+                    await bot.api.sendMessageToUser(
+                        maxChatId,
+                        `🦷 Уважаемый(ая) ${client.full_name || 'клиент'}!\n\n` +
+                        `Пожалуйста, оцените ваш визит к врачу ${doctorFullName}\n` +
+                        `📅 Дата: ${appointmentDate}\n` +
+                        `🕐 Время: ${appointmentTime}\n\n` +
+                        `Оцените прием по шкале от 1 до 10:\n` +
+                        `1️⃣ - ужасно, 1️⃣0️⃣ - превосходно`,
+                        keyboard
+                    );
 
-                sentReviews.set(reviewKey, Date.now());
-                sentCount++;
-                console.log(`📨 Отправлено в MAX для ${appointmentDate} ${appointmentTime}`);
+                    sentReviews.set(reviewKey, Date.now());
+                    sentCount++;
+                    console.log(`📨 Отправлено в MAX для ${appointmentDate} ${appointmentTime}`);
 
-                await new Promise(r => setTimeout(r, 1000));
+                    await new Promise(r => setTimeout(r, 1000));
+                }
             }
+
+            console.log(`📊 Отправлено запросов в MAX: ${sentCount}`);
+
+        } catch (error) {
+            console.error('❌ Ошибка в checkCompletedAppointments (MAX):', error);
+
         }
-
-        console.log(`📊 Отправлено запросов в MAX: ${sentCount}`);
-
-    } catch (error) {
-        console.error('❌ Ошибка в checkCompletedAppointments (MAX):', error);
-  
-    }
-};
+    };
 
 
-const checkBirthdays = async () => {
-    console.log(`🎂 Проверка дней рождения [${new Date().toLocaleString('ru-RU')}]`);
+    const checkBirthdays = async () => {
+        console.log(`🎂 Проверка дней рождения [${new Date().toLocaleString('ru-RU')}]`);
 
-    try {
-        // Получаем клиентов у которых сегодня день рождения
-        const birthdayClients = await pool.query(`
+        try {
+            // Получаем клиентов у которых сегодня день рождения
+            const birthdayClients = await pool.query(`
             SELECT 
                 id,
                 tg_id,
@@ -431,20 +431,20 @@ const checkBirthdays = async () => {
               AND EXTRACT(DAY FROM birth_date) = EXTRACT(DAY FROM CURRENT_DATE)
         `, [LOCATION]);
 
-        if (birthdayClients.rows.length === 0) {
-            console.log('   ℹ️ Нет клиентов с днём рождения сегодня');
-            return;
-        }
+            if (birthdayClients.rows.length === 0) {
+                console.log('   ℹ️ Нет клиентов с днём рождения сегодня');
+                return;
+            }
 
-        console.log(`   🎉 Найдено ${birthdayClients.rows.length} клиентов с днём рождения`);
+            console.log(`   🎉 Найдено ${birthdayClients.rows.length} клиентов с днём рождения`);
 
-        let processed = 0;
-        let errors = 0;
+            let processed = 0;
+            let errors = 0;
 
-        for (const client of birthdayClients.rows) {
-            try {
-                // Проверяем, не начисляли ли уже бонус сегодня
-                const existingBonus = await medCorePool.query(`
+            for (const client of birthdayClients.rows) {
+                try {
+                    // Проверяем, не начисляли ли уже бонус сегодня
+                    const existingBonus = await medCorePool.query(`
                     SELECT id, created_at FROM bonus_write_offs 
                     WHERE clinic_patient_id = $1 
                       AND clinic_id = 3 
@@ -454,43 +454,43 @@ const checkBirthdays = async () => {
                     LIMIT 1
                 `, [client.clinic_person_id]);
 
-                if (existingBonus.rows.length > 0) {
-                    console.log(`   ⏭️ Клиенту ${client.clinic_person_id} уже начислен birthday бонус сегодня (${existingBonus.rows[0].created_at})`);
-                    continue;
-                }
+                    if (existingBonus.rows.length > 0) {
+                        console.log(`   ⏭️ Клиенту ${client.clinic_person_id} уже начислен birthday бонус сегодня (${existingBonus.rows[0].created_at})`);
+                        continue;
+                    }
 
-                const chatId = client.max_id 
-                
-                if (!chatId) {
-                    console.log(`   ⚠️ У клиента ${client.id} нет ID для отправки сообщения`);
-                    // Пропускаем, но не начисляем бонус
-                    continue;
-                }
+                    const chatId = client.max_id
 
-                const birthdayBonus = 1600;
-                const oldBalance = client.bonus_balance || 0;
-                const newBalance = oldBalance + birthdayBonus;
+                    if (!chatId) {
+                        console.log(`   ⚠️ У клиента ${client.id} нет ID для отправки сообщения`);
+                        // Пропускаем, но не начисляем бонус
+                        continue;
+                    }
 
-                // 1. Обновляем баланс клиента в 32karata
-                await pool.query(
-                    `UPDATE client SET bonus_balance = $1 WHERE id = $2`,
-                    [newBalance, client.id]
-                );
+                    const birthdayBonus = 1600;
+                    const oldBalance = client.bonus_balance || 0;
+                    const newBalance = oldBalance + birthdayBonus;
 
-                // 2. Получаем patient_id из medCore
-                const patientResult = await medCorePool.query(
-                    `SELECT id FROM patients WHERE clinic_patient_id = $1 AND clinic_id = 3 LIMIT 1`,
-                    [client.clinic_person_id]
-                );
+                    // 1. Обновляем баланс клиента в 32karata
+                    await pool.query(
+                        `UPDATE client SET bonus_balance = $1 WHERE id = $2`,
+                        [newBalance, client.id]
+                    );
 
-                let patientId = null;
-                if (patientResult.rows.length > 0) {
-                    patientId = patientResult.rows[0].id;
-                }
+                    // 2. Получаем patient_id из medCore
+                    const patientResult = await medCorePool.query(
+                        `SELECT id FROM patients WHERE clinic_patient_id = $1 AND clinic_id = 3 LIMIT 1`,
+                        [client.clinic_person_id]
+                    );
 
-                // 3. Сохраняем историю начисления в medCore
-                if (patientId) {
-                    await medCorePool.query(`
+                    let patientId = null;
+                    if (patientResult.rows.length > 0) {
+                        patientId = patientResult.rows[0].id;
+                    }
+
+                    // 3. Сохраняем историю начисления в medCore
+                    if (patientId) {
+                        await medCorePool.query(`
                         INSERT INTO bonus_write_offs (
                             patient_id,
                             clinic_id,
@@ -504,60 +504,60 @@ const checkBirthdays = async () => {
                             created_at
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'accrual', 'birthday', NOW())
                     `, [
-                        patientId,
-                        3,
-                        client.clinic_person_id,
-                        birthdayBonus,
-                        `🎂 Бонус за день рождения`,
-                        oldBalance,
-                        newBalance
-                    ]);
-                }
+                            patientId,
+                            3,
+                            client.clinic_person_id,
+                            birthdayBonus,
+                            `🎂 Бонус за день рождения`,
+                            oldBalance,
+                            newBalance
+                        ]);
+                    }
 
-                // 4. Отправляем поздравление
-                const message = 
-                    `🎂 С Днём Рождения! 🎉\n\n` +
-                    `Мы хотим поздравить Вас с этим замечательным днём и сделать подарок! 🎁\n\n` +
-                    `💰 Вам начислено ${birthdayBonus} бонусов!\n\n` +
-                    `⏰ Успейте воспользоваться ими в течение 30 дней!\n` +
-                    `Бонусы будут доступны для оплаты услуг в нашей клинике.\n\n` +
-                    `Спасибо, что Вы с нами! ❤️`;
+                    // 4. Отправляем поздравление
+                    const message =
+                        `🎂 С Днём Рождения! 🎉\n\n` +
+                        `Мы хотим поздравить Вас с этим замечательным днём и сделать подарок! 🎁\n\n` +
+                        `💰 Вам начислено ${birthdayBonus} бонусов!\n\n` +
+                        `⏰ Успейте воспользоваться ими в течение 30 дней!\n` +
+                        `Бонусы будут доступны для оплаты услуг в нашей клинике.\n\n` +
+                        `Спасибо, что Вы с нами! ❤️`;
 
-                await bot.api.sendMessageToUser(chatId, message, {
-                    parse_mode: 'Markdown'
-                });
+                    await bot.api.sendMessageToUser(chatId, message, {
+                        parse_mode: 'Markdown'
+                    });
 
-                processed++;
-                console.log(`   ✅ ${client.full_name} (${client.clinic_person_id}): начислено ${birthdayBonus} бонусов, баланс: ${oldBalance} → ${newBalance}`);
+                    processed++;
+                    console.log(`   ✅ ${client.full_name} (${client.clinic_person_id}): начислено ${birthdayBonus} бонусов, баланс: ${oldBalance} → ${newBalance}`);
 
-                // Небольшая задержка между отправками
-                await new Promise(r => setTimeout(r, 1000));
+                    // Небольшая задержка между отправками
+                    await new Promise(r => setTimeout(r, 1000));
 
-            } catch (err) {
-                errors++;
-                console.error(`   ❌ Ошибка при обработке клиента ${client.id}:`, err.message);
-                
-                // Если ошибка в отправке, но бонус уже начислен, логируем
-                if (err.message.includes('chat not found') || err.message.includes('blocked')) {
-                    console.log(`   📌 Клиент ${client.id} заблокировал бота, бонус не начислен`);
+                } catch (err) {
+                    errors++;
+                    console.error(`   ❌ Ошибка при обработке клиента ${client.id}:`, err.message);
+
+                    // Если ошибка в отправке, но бонус уже начислен, логируем
+                    if (err.message.includes('chat not found') || err.message.includes('blocked')) {
+                        console.log(`   📌 Клиент ${client.id} заблокировал бота, бонус не начислен`);
+                    }
                 }
             }
+
+            console.log(`\n✅ Проверка дней рождения завершена:`);
+            console.log(`   🎉 Обработано: ${processed}`);
+            console.log(`   ❌ Ошибок: ${errors}`);
+
+        } catch (error) {
+            console.error('❌ Ошибка при проверке дней рождения:', error);
         }
+    };
 
-        console.log(`\n✅ Проверка дней рождения завершена:`);
-        console.log(`   🎉 Обработано: ${processed}`);
-        console.log(`   ❌ Ошибок: ${errors}`);
+    const BIRTHDAY_CHECK_INTERVAL = 60 * 60 * 1000;
 
-    } catch (error) {
-        console.error('❌ Ошибка при проверке дней рождения:', error);
-    }
-};
-
-const BIRTHDAY_CHECK_INTERVAL = 60 * 60 * 1000;
-
-// Запускаем проверку дней рождения
-const birthdayInterval = setInterval(checkBirthdays, BIRTHDAY_CHECK_INTERVAL);
-setTimeout(checkBirthdays, 30000); 
+    // Запускаем проверку дней рождения
+    const birthdayInterval = setInterval(checkBirthdays, BIRTHDAY_CHECK_INTERVAL);
+    setTimeout(checkBirthdays, 30000);
 
 
     const REVIEW_CHECK_INTERVAL = 30 * 60 * 1000;
@@ -582,13 +582,13 @@ setTimeout(checkBirthdays, 30000);
         console.log(`⏰ Проверка напоминаний (MAX): раз в сутки в 09:00 (следующая через ${Math.floor(delay / 1000 / 60)} мин)`);
     };
 
-//     const scheduleDailyCheck = () => {
-//     if (reminderTimeout) clearInterval(reminderTimeout);
-//     reminderTimeout = setInterval(() => {
-//         checkAndSendReminders(bot).catch(console.error);
-//     }, 60000);
-//     console.log(`⏰ Проверка напоминаний: каждую минуту`);
-// };
+    //     const scheduleDailyCheck = () => {
+    //     if (reminderTimeout) clearInterval(reminderTimeout);
+    //     reminderTimeout = setInterval(() => {
+    //         checkAndSendReminders(bot).catch(console.error);
+    //     }, 60000);
+    //     console.log(`⏰ Проверка напоминаний: каждую минуту`);
+    // };
 
     scheduleDailyCheck();
 

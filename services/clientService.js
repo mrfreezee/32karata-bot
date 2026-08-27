@@ -168,6 +168,8 @@ async function saveClientToDB(userId, clientData, phone, platform = 'max', invit
     }
 }
 
+
+
 async function createNewClient(messengerId, idColumn, clientData, phone, invitedId, avatarUrl) {
     const clientCode = await generateUniqueCode();
     const refCode = await generateUniqueCode();
@@ -182,20 +184,16 @@ async function createNewClient(messengerId, idColumn, clientData, phone, invited
     const branchId = location === 'mosc' ? 50 : null;
 
     let welcomeBonus = 0;
-    if (isPrimary) {
-        try {
-            const bonusSettings = await medCorePool.query(
-                `SELECT welcome_bonus FROM referral_settings WHERE clinic_id = 3 AND is_active = true LIMIT 1`
-            );
-            if (bonusSettings.rows.length > 0 && bonusSettings.rows[0].welcome_bonus) {
-                welcomeBonus = bonusSettings.rows[0].welcome_bonus;
-                console.log(`🎁 Welcome bonus from settings: ${welcomeBonus}`);
-            }
-        } catch (error) {
-            console.error('❌ Ошибка получения welcome_bonus:', error.message);
+    try {
+        const bonusSettings = await medCorePool.query(
+            `SELECT welcome_bonus FROM referral_settings WHERE clinic_id = 3 AND is_active = true LIMIT 1`
+        );
+        if (bonusSettings.rows.length > 0 && bonusSettings.rows[0].welcome_bonus) {
+            welcomeBonus = bonusSettings.rows[0].welcome_bonus;
+            console.log(`🎁 Welcome bonus from settings: ${welcomeBonus}`);
         }
-    } else {
-        console.log(`ℹ️ Пациент не первичный (date_of_first_appointment не null), welcome bonus не начисляется, invited_id игнорируется`);
+    } catch (error) {
+        console.error('❌ Ошибка получения welcome_bonus:', error.message);
     }
 
     const query = `
@@ -219,7 +217,7 @@ async function createNewClient(messengerId, idColumn, clientData, phone, invited
         clinicPersonId,
         branchId,
         location,
-        finalInvitedId,  // ✅ Если не первичный - будет null
+        finalInvitedId,
         avatarUrl || null,
         totalCash,
         isPrimary
