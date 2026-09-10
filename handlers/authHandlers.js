@@ -2,7 +2,7 @@
 const { getClientByPhone, checkClientExists, saveClientToDB } = require('../services/clientService');
 const { requestContactKeyboard, confirmKeyboard, agreeKeyboard } = require('../keyboards/keyboards');
 const { cleanPhoneNumber } = require('../utils/phoneHelper');
-const { pgPool } = require('../db');
+const { pool } = require('../db');
 const { Keyboard } = require('@maxhub/max-bot-api');
 
 const userStates = new Map();
@@ -20,6 +20,38 @@ function getAvatarUrlFromContext(ctx) {
     return ctx.user?.avatar_url || ctx.user?.full_avatar_url || null;
 }
 
+
+async function resolveReferrerId(startParam) {
+    if (!startParam) return null;
+
+    // Убираем префикс "ref_", если есть
+    const refCode = startParam.startsWith('ref_')
+        ? startParam.replace('ref_', '')
+        : startParam;
+
+    console.log(`🔍 Поиск реферера по ref_code: ${refCode}`);
+
+    try {
+        const result = await pool.query(
+            `SELECT id FROM client WHERE ref_code = $1 LIMIT 1`,
+            [refCode]
+        );
+
+        if (result.rows.length > 0) {
+            const referrerId = result.rows[0].id;
+            console.log(`✅ Referrer ID (client.id): ${referrerId}`);
+            return referrerId;
+        }
+
+        console.log(`⚠️ Реферер не найден по ref_code: ${refCode}`);
+        return null;
+
+    } catch (error) {
+        console.error('❌ Ошибка поиска реферера:', error.message);
+        return null;
+    }
+}
+
 // Основная функция авторизации
 async function authorizeUser(ctx, userId, userName, startParam, avatarUrl) {
     console.log(new Date().toISOString(), 'Авторизация пользователя:', userId, userName, 'avatar:', avatarUrl);
@@ -30,32 +62,20 @@ async function authorizeUser(ctx, userId, userName, startParam, avatarUrl) {
         return false;
     }
 
-    let referrerId = null;
+    // ✅ Ищем id из таблицы client по ref_code (как в Telegram)
+    const referrerId = await resolveReferrerId(startParam);
 
-    if (startParam && startParam.length >= 6) {
-        try {
-            const referrerQuery = await pgPool.query(
-                `SELECT user_id, full_name FROM client WHERE ref_code = $1 LIMIT 1`,
-                [startParam]
-            );
-
-            if (referrerQuery.rows.length > 0) {
-                referrerId = referrerQuery.rows[0].user_id;
-                console.log(`🎉 Найден пригласивший: ${referrerQuery.rows[0].full_name} (${referrerId})`);
-            }
-        } catch (err) {
-            console.error('Ошибка поиска реферала:', err.message);
-        }
+    if (referrerId) {
+        console.log(`🎉 Referrer ID (client.id): ${referrerId}`);
+    } else {
+        console.log('ℹ️ Реферальный код не указан или не найден');
     }
 
-    // ⚠️ ВАЖНО: Удаляем старую проверку checkClientExists
-    // Теперь всегда проходим полную регистрацию, даже если пользователь уже есть
-    
     // Очищаем старый стейт пользователя
     userStates.delete(userId);
     
     userStates.set(userId, {
-        referrerId,
+        referrerId,  // ← id из таблицы client
         avatarUrl,
         step: 'start'
     });
@@ -70,14 +90,52 @@ async function authorizeUser(ctx, userId, userName, startParam, avatarUrl) {
     return false;
 }
 
+function getStartParamFromContext(ctx) {
+    const sources = [
+        ctx.payload,
+        ctx.update?.payload,
+        ctx.message?.body?.payload,
+        ctx.start_param,
+        ctx.update?.start_param,
+        ctx.message?.body?.start_param,
+        ctx.event?.payload,
+        ctx.event?.start_param,
+    ];
+
+    for (const source of sources) {
+        if (source !== undefined && source !== null && source !== '') {
+            console.log('✅ startParam найден:', source);
+            return String(source);
+        }
+    }
+
+    const fullText = ctx.message?.body?.text || '';
+    if (fullText.startsWith('/start ')) {
+        return fullText.substring(7).trim();
+    }
+
+    console.log('⚠️ startParam не найден. Доступные поля:', {
+        'ctx.payload': ctx.payload,
+        'ctx.update?.payload': ctx.update?.payload,
+        'ctx.message?.body?.payload': ctx.message?.body?.payload,
+        'ctx.start_param': ctx.start_param,
+        'ctx.update?.start_param': ctx.update?.start_param,
+        'ctx.message?.body?.start_param': ctx.message?.body?.start_param,
+        'ctx.event?.payload': ctx.event?.payload,
+        'ctx.message?.body?.text': ctx.message?.body?.text,
+    });
+
+    return null;
+}
+
 function handleStart(bot) {
     bot.on('bot_started', async (ctx) => {
         const userId = getUserIdFromContext(ctx);
         const userName = ctx.user?.first_name || ctx.message?.sender?.first_name || 'Гость';
-        const startParam = ctx.start_param || ctx.message?.body?.start_param;
         const avatarUrl = getAvatarUrlFromContext(ctx);
+        const startParam = getStartParamFromContext(ctx);
 
-        console.log('📱 bot_started:', { userId, userName, avatarUrl });
+        console.log('📱 bot_started:', { userId, userName, avatarUrl, startParam });
 
         await authorizeUser(ctx, userId, userName, startParam, avatarUrl);
     });
@@ -86,15 +144,9 @@ function handleStart(bot) {
         const userId = getUserIdFromContext(ctx);
         const userName = ctx.message?.sender?.first_name || 'Гость';
         const avatarUrl = getAvatarUrlFromContext(ctx);
+        const startParam = getStartParamFromContext(ctx);
 
-        console.log('📱 /start command:', { userId, userName, avatarUrl });
-
-        let startParam = ctx.message?.body?.start_param;
-        const fullText = ctx.message?.body?.text || '';
-
-        if (!startParam && fullText.startsWith('/start ')) {
-            startParam = fullText.substring(7).trim();
-        }
+        console.log('📱 /start command:', { userId, userName, avatarUrl, startParam });
 
         await authorizeUser(ctx, userId, userName, startParam, avatarUrl);
     });
@@ -110,7 +162,7 @@ function handleAgreeProcessing(bot) {
 
         userStates.set(userId, {
             step: 'awaiting_phone',
-            referrerId: existingState.referrerId,
+            referrerId: existingState.referrerId,  // ← сохраняем referrerId
             avatarUrl: existingState.avatarUrl
         });
 
@@ -218,10 +270,9 @@ function handleContact(bot) {
 
             const selectKeyboard = Keyboard.inlineKeyboard(buttons);
 
-
             await ctx.reply(`📋 Найдено ${clients.length} пациента. Выберите основного:`, 
-    { attachments: [selectKeyboard] }
-);
+                { attachments: [selectKeyboard] }
+            );
         } catch (err) {
             console.error('Ошибка обработки контакта:', err);
             userStates.set(userId, { ...state, _processingContact: false });
@@ -242,7 +293,14 @@ function handleConfirmData(bot) {
         const avatarUrl = state.avatarUrl;
         const clientData = state.clientData;
         const phone = state.phone;
-        const referrerId = state.referrerId;
+        const referrerId = state.referrerId;  // ← id из таблицы client
+
+        console.log('🔗 Сохранение клиента:', {
+            userId,
+            referrerId,  // ← логируем для проверки
+            phone,
+            platform: 'max'
+        });
 
         // Сохраняем выбранного пациента как основного
         await saveClientToDB(userId, clientData, phone, 'max', referrerId, avatarUrl);
@@ -312,5 +370,6 @@ module.exports = {
     handleConfirmData,
     handleCancelAuth,
     handleSelectClient,
-    userStates
+    userStates,
+    resolveReferrerId  // ← экспортируем для тестов
 };

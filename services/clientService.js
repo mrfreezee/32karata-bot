@@ -183,53 +183,97 @@ async function createNewClient(messengerId, idColumn, clientData, phone, invited
     const location = process.env.LOCATION;
     const branchId = location === 'mosc' ? 50 : null;
 
+    // ✅ Берём ВСЕ бонусы только из БД medCore
     let welcomeBonus = 0;
+    let bonusInvited = 0;
+    let bonusInviter = 0;
+
     try {
         const bonusSettings = await medCorePool.query(
-            `SELECT welcome_bonus FROM referral_settings WHERE clinic_id = 3 AND is_active = true LIMIT 1`
+            `SELECT welcome_bonus, bonus_invited, bonus_inviter 
+             FROM referral_settings 
+             WHERE clinic_id = 3 AND is_active = true 
+             LIMIT 1`
         );
-        if (bonusSettings.rows.length > 0 && bonusSettings.rows[0].welcome_bonus) {
-            welcomeBonus = bonusSettings.rows[0].welcome_bonus;
-            console.log(`🎁 Welcome bonus from settings: ${welcomeBonus}`);
+
+        if (bonusSettings.rows.length > 0) {
+            welcomeBonus = bonusSettings.rows[0].welcome_bonus || 0;
+            bonusInvited = bonusSettings.rows[0].bonus_invited || 0;
+            bonusInviter = bonusSettings.rows[0].bonus_inviter || 0;
+
+            console.log('🎁 Настройки бонусов из БД:', {
+                welcomeBonus,
+                bonusInvited,
+                bonusInviter
+            });
+        } else {
+            console.log('⚠️ Настройки бонусов не найдены в referral_settings');
         }
     } catch (error) {
-        console.error('❌ Ошибка получения welcome_bonus:', error.message);
+        console.error('❌ Ошибка получения бонусов из referral_settings:', error.message);
     }
 
-    const query = `
-        INSERT INTO public.client (
-            ${idColumn}, full_name, phone, birth_date, reg_date, role, 
-            client_code, ref_code, is_new, bonus_balance, clinic_person_id, 
-            data_processing, branch_id, location, invited_id, invitation_date, avatar_url, total_cash,
-            is_primary
-        ) VALUES ($1, $2, $3, $4, NOW(), 'patient', $5, $6, true, $7, $8, true, $9, $10, $11, NOW(), $12, $13, $14)
-        RETURNING *;
-    `;
-
-    const values = [
-        messengerId,
-        clientData.display_name || null,
-        phone,
-        clientData.birthday || null,
-        clientCode,
-        refCode,
-        welcomeBonus,
-        clinicPersonId,
-        branchId,
-        location,
-        finalInvitedId,
-        avatarUrl || null,
-        totalCash,
-        isPrimary
-    ];
-
+    const client = await pool.connect();
+    
     try {
-        const result = await pool.query(query, values);
-        console.log(`✅ Новый клиент создан: ${idColumn}=${messengerId}, phone=${phone}, branch_id=${branchId}, бонус=${welcomeBonus}, total_cash=${totalCash}, is_primary=${isPrimary}, invited_id=${finalInvitedId || 'нет'}`);
-        return result.rows[0];
+        await client.query('BEGIN');
+
+        const query = `
+            INSERT INTO public.client (
+                ${idColumn}, full_name, phone, birth_date, reg_date, role, 
+                client_code, ref_code, is_new, bonus_balance, clinic_person_id, 
+                data_processing, branch_id, location, invited_id, invitation_date, avatar_url, total_cash,
+                is_primary
+            ) VALUES ($1, $2, $3, $4, NOW(), 'patient', $5, $6, true, $7, $8, true, $9, $10, $11, NOW(), $12, $13, $14)
+            RETURNING *;
+        `;
+
+        const values = [
+            messengerId,
+            clientData.display_name || null,
+            phone,
+            clientData.birthday || null,
+            clientCode,
+            refCode,
+            welcomeBonus,     // ← из БД
+            clinicPersonId,
+            branchId,
+            location,
+            finalInvitedId,  
+            avatarUrl || null,
+            totalCash,
+            isPrimary
+        ];
+
+        const result = await client.query(query, values);
+        const newClient = result.rows[0];
+
+        console.log(`✅ Новый клиент создан: ${idColumn}=${messengerId}, phone=${phone}, bonus=${welcomeBonus}, invited_id=${finalInvitedId || 'нет'}`);
+
+        // ✅ СОЗДАЁМ ЗАПИСЬ В REFERRALS (если есть пригласивший)
+        if (finalInvitedId) {
+            try {
+                await client.query(
+                    `INSERT INTO referrals (invited_id, referrer_id, invitation_date, invited_bonus, referrer_bonus)
+                     VALUES ($1, $2, NOW(), $3, $4)`,
+                    [newClient.id, finalInvitedId, bonusInvited, bonusInviter]
+                );
+
+                console.log(`✅ Запись в referrals создана: invited_id=${newClient.id}, referrer_id=${finalInvitedId}, invited_bonus=${bonusInvited}, referrer_bonus=${bonusInviter}`);
+            } catch (refError) {
+                console.error('❌ Ошибка создания записи в referrals:', refError.message);
+            }
+        }
+
+        await client.query('COMMIT');
+        return newClient;
+
     } catch (error) {
+        await client.query('ROLLBACK');
         console.error('❌ Ошибка создания клиента:', error);
         return null;
+    } finally {
+        client.release();
     }
 }
 
