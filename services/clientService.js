@@ -7,6 +7,7 @@ const { generateUniqueCode } = require('../utils/codeGenerator');
 const API_TOKEN = process.env.API_TOKEN;
 const API_SECRET = process.env.API_SECRET;
 const API_CLIENT_URL = process.env.API_CLIENT_URL;
+const LOCATION = process.env.LOCATION;
 
 async function getClientByPhone(phone) {
     const cleanPhone = cleanPhoneNumber(phone);
@@ -440,110 +441,141 @@ async function markBonusAsNotified(bonusId, error = null) {
     }
 }
 
-async function processPendingMailings(bot) {
-    try {
-        // Получаем все неотправленные рассылки
-        const mailings = await medCorePool.query(`
-            SELECT * FROM mailings 
-            WHERE status = 'pending' 
-            ORDER BY created_at ASC
-        `);
+async function processPendingMailings(bot, clinicId = 3, location = LOCATION) {
+  try {
+    const mailings = await medCorePool.query(`
+      SELECT DISTINCT m.*
+      FROM mailings m
+      JOIN mailing_recipients r ON r.mailing_id = m.id
+      WHERE m.clinic_id = $1
+        AND m.status IN ('pending', 'processing')
+        AND r.sent_max = false
+        AND r.max_id IS NOT NULL
+        ${location ? 'AND m.location = $2' : ''}
+        ${location ? 'AND r.location = $2' : ''}
+      ORDER BY m.created_at ASC
+    `, location ? [clinicId, location] : [clinicId]);
 
-        if (mailings.rows.length === 0) {
-            console.log('📭 Нет pending рассылок');
-            return;
-        }
-
-        console.log(`📨 Найдено ${mailings.rows.length} рассылок для отправки`);
-
-        for (const mailing of mailings.rows) {
-            console.log(`\n📧 Обработка рассылки #${mailing.id}`);
-            console.log(`   Тип: ${mailing.recipient_type}`);
-            console.log(`   Клиника: ${mailing.clinic_id}`);
-
-            // Получаем получателей из таблицы mailing_recipients
-            const recipients = await medCorePool.query(`
-                SELECT 
-                    id,
-                    max_id,
-                    full_name,
-                    phone,
-                    sent,
-                    clinic_id
-                FROM mailing_recipients
-                WHERE mailing_id = $1 
-                    AND sent = false
-                    AND clinic_id = 3
-                    AND max_id IS NOT NULL
-            `, [mailing.id]);
-
-            if (recipients.rows.length === 0) {
-                console.log(`⚠️ Нет получателей для рассылки #${mailing.id}, помечаем как отправленную`);
-                await medCorePool.query(`
-                    UPDATE mailings 
-                    SET status = 'sent', sent_at = NOW() 
-                    WHERE id = $1
-                `, [mailing.id]);
-                continue;
-            }
-
-            console.log(`   Получателей: ${recipients.rows.length}`);
-
-            let sent = 0;
-            let failed = 0;
-
-            // Формируем сообщение
-            const fullMessage = mailing.message_title
-                ? `*${mailing.message_title}*\n\n${mailing.message_text}`
-                : mailing.message_text;
-
-            for (const recipient of recipients.rows) {
-                try {
-                    await bot.api.sendMessageToUser(recipient.max_id, fullMessage, {
-                        parse_mode: 'Markdown',
-                        disable_web_page_preview: true
-                    });
-
-                    // Отмечаем как отправленное
-                    await medCorePool.query(`
-                        UPDATE mailing_recipients 
-                        SET sent = true, sent_at = NOW() 
-                        WHERE id = $1
-                    `, [recipient.id]);
-
-                    sent++;
-
-                    if (sent % 10 === 0) {
-                        console.log(`   ✅ Отправлено ${sent}/${recipients.rows.length}`);
-                    }
-
-                    await new Promise(r => setTimeout(r, 100));
-
-                } catch (error) {
-                    if (error.response?.error_code === 403) {
-                        console.log(`   ❌ Пользователь ${recipient.max_id} заблокировал бота`);
-                    } else {
-                        console.error(`   ❌ Ошибка отправки ${recipient.max_id}:`, error.message);
-                    }
-                    failed++;
-                }
-            }
-
-            // Обновляем статус рассылки
-            await medCorePool.query(`
-                UPDATE mailings 
-                SET status = 'sent', 
-                    sent_at = NOW(),
-                    updated_at = NOW()
-                WHERE id = $1
-            `, [mailing.id]);
-
-            console.log(`✅ Рассылка #${mailing.id} завершена: отправлено ${sent}, ошибок ${failed}`);
-        }
-
-    } catch (error) {
-        console.error('❌ Ошибка в processPendingMailings:', error);
+    if (mailings.rows.length === 0) {
+      console.log(`📭 Нет активных MAX-рассылок для клиники ${clinicId}${location ? ` (${location})` : ''}`);
+      return;
     }
+
+    console.log(`📨 Найдено ${mailings.rows.length} MAX-рассылок для клиники ${clinicId}${location ? ` (${location})` : ''}`);
+
+    for (const mailing of mailings.rows) {
+      console.log(`\n📧 [MAX] Обработка рассылки #${mailing.id}`);
+      console.log(`   Локация: ${mailing.location}`);
+
+      const recipients = await medCorePool.query(`
+        SELECT id, max_id, full_name, phone
+        FROM mailing_recipients
+        WHERE mailing_id = $1
+          AND sent_max = false
+          AND clinic_id = $2
+          AND max_id IS NOT NULL
+          ${location ? 'AND location = $3' : ''}
+      `, location
+        ? [mailing.id, clinicId, location]
+        : [mailing.id, clinicId]);
+
+      if (recipients.rows.length === 0) {
+        console.log(`   ⚠️ Нет MAX-получателей для рассылки #${mailing.id}`);
+        continue;
+      }
+
+      console.log(`   Осталось отправить в MAX: ${recipients.rows.length}`);
+
+      const fullMessage = mailing.message_title
+        ? `${mailing.message_title}\n\n${mailing.message_text}`
+        : mailing.message_text;
+
+      let sent = 0;
+      let failed = 0;
+
+      for (const recipient of recipients.rows) {
+        let delivered = false;
+
+        try {
+          await bot.api.sendMessageToUser(recipient.max_id, fullMessage, {
+            disable_web_page_preview: true
+          });
+          delivered = true;
+        } catch (error) {
+          const code = error.response?.error_code;
+
+          if (code === 403) {
+            console.log(`   ❌ [MAX] ${recipient.max_id} заблокировал бота, помечаем обработанным`);
+            await medCorePool.query(`
+              UPDATE mailing_recipients
+              SET sent_max = true, sent_max_at = NOW()
+              WHERE id = $1 AND clinic_id = $2
+            `, [recipient.id, clinicId]);
+            failed++;
+            continue;
+          }
+
+          if (code === 429) {
+            console.log(`   ⚠️ [MAX] Лимит запросов, ждём 5 сек и повторяем для ${recipient.max_id}`);
+            await new Promise(r => setTimeout(r, 5000));
+            try {
+              await bot.api.sendMessageToUser(recipient.max_id, fullMessage, {
+                disable_web_page_preview: true
+              });
+              delivered = true;
+            } catch (retryError) {
+              console.error(`   ❌ [MAX] Повторная ошибка для ${recipient.max_id}:`, retryError.message);
+            }
+          } else {
+            console.error(`   ❌ [MAX] Ошибка отправки ${recipient.max_id}:`, error.message);
+          }
+        }
+
+        if (delivered) {
+          await medCorePool.query(`
+            UPDATE mailing_recipients
+            SET sent_max = true, sent_max_at = NOW()
+            WHERE id = $1 AND clinic_id = $2
+          `, [recipient.id, clinicId]);
+          sent++;
+        } else {
+          failed++;
+        }
+
+        await new Promise(r => setTimeout(r, 100));
+      }
+
+      console.log(`   ✅ [MAX] Рассылка #${mailing.id}: отправлено ${sent}, ошибок ${failed}`);
+
+      const remainingCheck = await medCorePool.query(`
+        SELECT COUNT(*) as remaining
+        FROM mailing_recipients
+        WHERE mailing_id = $1
+          AND clinic_id = $2
+          AND (sent = false OR sent_max = false)
+          AND (tg_id IS NOT NULL OR max_id IS NOT NULL)
+          ${location ? 'AND location = $3' : ''}
+      `, location
+        ? [mailing.id, clinicId, location]
+        : [mailing.id, clinicId]);
+
+      const remaining = parseInt(remainingCheck.rows[0].remaining);
+
+      if (remaining === 0) {
+        await medCorePool.query(`
+          UPDATE mailings
+          SET status = 'sent', sent_at = NOW(), updated_at = NOW()
+          WHERE id = $1 AND clinic_id = $2
+        `, [mailing.id, clinicId]);
+        console.log(`✅ [MAX] Рассылка #${mailing.id} полностью завершена (TG + MAX)`);
+      } else {
+        console.log(`⏳ [MAX] Рассылка #${mailing.id}: осталось ${remaining} необработанных, продолжим в следующем цикле`);
+      }
+    }
+
+  } catch (error) {
+    console.error('❌ Ошибка в processPendingMailingsMax:', error);
+  }
 }
 
 async function processPermanentReminders(bot) {
